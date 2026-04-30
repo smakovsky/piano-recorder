@@ -1158,6 +1158,33 @@ midiOutputSelect.addEventListener('change', () => {
   if (idx !== '') connectOutput(parseInt(idx));
 });
 
+// Re-connect after sleep/wake or USB reconnect.
+// We hook into the native Web MIDI onstatechange so we hear device
+// connect/disconnect events that JZZ doesn't surface on its own.
+navigator.requestMIDIAccess && navigator.requestMIDIAccess().then(access => {
+  access.onstatechange = () => {
+    const prevInputName  = midiInputSelect.options[midiInputSelect.selectedIndex]?.textContent;
+    const prevOutputName = midiOutputSelect.options[midiOutputSelect.selectedIndex]?.textContent;
+
+    // Give the OS a moment to fully enumerate the reconnected device
+    setTimeout(() => {
+      populateDevices();
+
+      // Restore previously selected ports by name
+      if (prevInputName) {
+        const opt = Array.from(midiInputSelect.options).find(o => o.textContent === prevInputName);
+        if (opt) { midiInputSelect.value = opt.value; connectInput(parseInt(opt.value)); }
+      }
+      if (prevOutputName) {
+        const opt = Array.from(midiOutputSelect.options).find(o => o.textContent === prevOutputName);
+        if (opt) { midiOutputSelect.value = opt.value; connectOutput(parseInt(opt.value)); }
+      }
+
+      setStatus('MIDI device reconnected');
+    }, 500);
+  };
+});
+
 // ═══════════════════════════════════════════════════════════════
 // KEYBOARD SHORTCUTS
 // ═══════════════════════════════════════════════════════════════
