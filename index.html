@@ -552,6 +552,7 @@ const state = {
   // recording
   recordingStartTime: null,   // performance.now() when capture began
   recordingStartBar:  1,      // global timeline origin (set on first take, reset on full undo)
+  recordingBeatsPerBar: 4,    // beatsPerBar locked at first take — never changes mid-session
   events: [],                 // { deltaBeats, msg, takeId } — tempo-independent, sorted ascending
   currentTakeId:     0,       // increments each record press
   currentTakeOffset: 0,       // beats from global origin to current take's bar 1
@@ -629,13 +630,14 @@ function totalRecordingBeats() {
 }
 
 function totalRecordingBars() {
-  return Math.max(0, Math.ceil(totalRecordingBeats() / state.beatsPerBar));
+  return Math.max(0, Math.ceil(totalRecordingBeats() / state.recordingBeatsPerBar));
 }
 
 // Convert beat offset from recording origin → { bar, beat } display values
 function barBeatFromBeats(beats) {
-  const bar  = Math.floor(beats / state.beatsPerBar) + state.recordingStartBar;
-  const beat = Math.floor(beats % state.beatsPerBar) + 1;
+  const bpb  = state.recordingBeatsPerBar;
+  const bar  = Math.floor(beats / bpb) + state.recordingStartBar;
+  const beat = Math.floor(beats % bpb) + 1;
   return { bar, beat };
 }
 
@@ -674,9 +676,8 @@ function midiSend(msgArray) {
 // ═══════════════════════════════════════════════════════════════
 // METRONOME
 // ═══════════════════════════════════════════════════════════════
-function scheduleMetroBeat() {
+function scheduleMetroBeat(beatIndex) {
   if (!state.midiOutput) return;
-  const beatIndex = state.metroBeat % state.beatsPerBar;
   const vol = parseInt(metroVolumeSlider.value);
   if (vol <= 0) return;
   const vel = beatIndex === 0 ? vol : Math.round(vol * 0.7);
@@ -686,16 +687,25 @@ function scheduleMetroBeat() {
 }
 
 function metronomeLoop() {
-  const now = performance.now();
-  const drift = now - state.metroNextTime;
+  const bpb = state.hasTake ? state.recordingBeatsPerBar : state.beatsPerBar;
 
-  scheduleMetroBeat();
+  // Which beat within the bar (0-based) is firing right now
+  const beatIndex = state.metroBeat % bpb;
 
-  // advance
-  state.metroBeat++;
-  if (state.metroBeat % state.beatsPerBar === 0) {
+  // If this is beat 0 of a new bar, increment metroBar first so display is correct
+  if (beatIndex === 0 && state.metroBeat > 0) {
     state.metroBar++;
   }
+
+  scheduleMetroBeat(beatIndex);
+
+  // Update bar/beat display on every tick during recording
+  if (state.mode === 'recording') {
+    state.cursorBeat = beatIndex + 1;
+    updatePositionDisplay(state.metroBar, beatIndex + 1);
+  }
+
+  state.metroBeat++;
 
   const beatLen = msPerBeat();
   state.metroNextTime += beatLen;
@@ -707,9 +717,11 @@ function metronomeLoop() {
 function startMetronome(fromBar) {
   stopMetronome();
   state.metroBar  = fromBar;
-  state.metroBeat = 0;
-  state.metroNextTime = performance.now();
-  metronomeLoop();
+  // Beat 1 of bar 1 is already displayed by startRecording.
+  // Start metroBeat at 1 so the first tick fires beat 2 one beat later.
+  state.metroBeat     = 1;
+  state.metroNextTime = performance.now() + msPerBeat();
+  state.metroTimer    = setTimeout(metronomeLoop, msPerBeat());
 }
 
 function stopMetronome() {
@@ -727,14 +739,15 @@ function startRecording() {
 
   // On the very first take, fix the global origin
   if (!state.hasTake) {
-    state.recordingStartBar = state.cursorBar;
-    state.events = [];
-    state.currentTakeId = 0;
+    state.recordingStartBar      = state.cursorBar;
+    state.recordingBeatsPerBar   = state.beatsPerBar;
+    state.events                 = [];
+    state.currentTakeId          = 0;
   }
 
   state.currentTakeId++;
   // Offset in beats from recording origin to where this take starts
-  state.currentTakeOffset = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar;
+  state.currentTakeOffset = (state.cursorBar - state.recordingStartBar) * state.recordingBeatsPerBar;
 
   state.mode = 'recording';
   state.recordingStartTime = performance.now();
@@ -763,10 +776,7 @@ function handleMidiInput(msg) {
   const deltaBeats = elapsedBeats + state.currentTakeOffset;
   state.events.push({ deltaBeats, msg: incoming, takeId: state.currentTakeId });
 
-  const { bar, beat } = barBeatFromBeats(deltaBeats);
-  state.cursorBar  = bar;
-  state.cursorBeat = beat;
-  updatePositionDisplay(bar, beat);
+  // bar/beat display is driven by metronome tick, not note events
 }
 
 // Play back already-recorded events that fall within this take's time window,
@@ -829,7 +839,7 @@ function startPlayback() {
   stopAll();
 
   // Cursor position in beats from recording origin
-  const cursorOffsetBeats = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar
+  const cursorOffsetBeats = (state.cursorBar - state.recordingStartBar) * state.recordingBeatsPerBar
                           + (state.cursorBeat - 1);
   const startIdx = state.events.findIndex(e => e.deltaBeats >= cursorOffsetBeats);
   if (startIdx === -1) { setStatus('Cursor past end of recording'); return; }
@@ -867,12 +877,6 @@ function schedulePlayback(startIdx, offsetBeats) {
       if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
 
       midiSend(ev.msg);
-
-      const { bar, beat } = barBeatFromBeats(ev.deltaBeats);
-      state.cursorBar  = bar;
-      state.cursorBeat = beat;
-      updatePositionDisplay(bar, beat);
-
       fire(idx + 1);
     }, delay);
   }
@@ -918,8 +922,9 @@ function undo() {
 
   if (!state.hasTake) {
     // All takes gone: reset origin so next recording starts fresh
-    state.recordingStartBar = state.startBar;
-    state.currentTakeId = 0;
+    state.recordingStartBar    = state.startBar;
+    state.recordingBeatsPerBar = state.beatsPerBar;
+    state.currentTakeId        = 0;
   }
 
   // Return cursor to where this take started
@@ -1003,7 +1008,7 @@ function exportMidi() {
   const cleaned = cleanCC64(state.events);
   const PPQ = 480;
   const bpm = state.bpm;
-  const beatsPerBar = state.beatsPerBar;
+  const beatsPerBar = state.recordingBeatsPerBar;
   const usPerBeat = Math.round(60000000 / bpm);
   const msPerTick = 60000 / bpm / PPQ;
 
@@ -1360,7 +1365,8 @@ function renderPianoRoll() {
   // Window: 8 bars wide, playhead pinned at 75%
   const WINDOW_BARS = 8;
   const CURSOR_X    = Math.round(W * 0.75);
-  const windowBeats = WINDOW_BARS * state.beatsPerBar;
+  const bpb = state.hasTake ? state.recordingBeatsPerBar : state.beatsPerBar;
+  const windowBeats = WINDOW_BARS * bpb;
   const beatsPerPx  = windowBeats / W;
 
   // Playhead in beats from recording origin
@@ -1372,7 +1378,7 @@ function renderPianoRoll() {
     cursorBeats = state.playbackStartOffsetBeats
                 + (performance.now() - state.playbackRealStartTime) / beatMs;
   } else {
-    cursorBeats = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar
+    cursorBeats = (state.cursorBar - state.recordingStartBar) * bpb
                 + (state.cursorBeat - 1);
   }
 
@@ -1391,11 +1397,11 @@ function renderPianoRoll() {
   for (let b = firstBeat; b <= lastBeat; b++) {
     const x = Math.round(beatsToX(b));
     if (x < -2 || x > W + 2) continue;
-    const isBarLine = b % state.beatsPerBar === 0;
+    const isBarLine = b % bpb === 0;
     if (isBarLine) {
       prCtx.fillStyle = '#44445a';
       prCtx.fillRect(x, 0, 2, H);
-      const barNum = state.recordingStartBar + Math.floor(b / state.beatsPerBar);
+      const barNum = state.recordingStartBar + Math.floor(b / bpb);
       prCtx.fillStyle = '#8888bb';
       prCtx.font = 'bold 12px monospace';
       prCtx.fillText(barNum, x + 4, 14);
@@ -1435,7 +1441,7 @@ function renderPianoRoll() {
   prCtx.fillRect(playheadX - 6, 0, 14, H);
   prCtx.fillStyle = isRecording ? '#ff3333' : (isPlaying ? '#ffffff' : '#9090ee');
   prCtx.fillRect(playheadX, 0, 3, H);
-  const cursorBarNum = state.recordingStartBar + Math.floor(cursorBeats / state.beatsPerBar);
+  const cursorBarNum = state.recordingStartBar + Math.floor(cursorBeats / bpb);
   prCtx.fillStyle = isRecording ? '#ff6666' : (isPlaying ? '#ffffff' : '#aaaaff');
   prCtx.font = 'bold 13px monospace';
   prCtx.fillText(cursorBarNum, playheadX + 5, H - 6);
@@ -1443,7 +1449,22 @@ function renderPianoRoll() {
 
 function startRaf() {
   if (rafId) return;
-  (function loop() { renderPianoRoll(); rafId = requestAnimationFrame(loop); })();
+  (function loop() {
+    renderPianoRoll();
+    // Keep bar/beat display in sync during playback via RAF
+    if (state.mode === 'playing') {
+      const bpb = state.recordingBeatsPerBar;
+      const beats = state.playbackStartOffsetBeats
+                  + (performance.now() - state.playbackRealStartTime) / msPerBeat();
+      const { bar, beat } = barBeatFromBeats(beats);
+      if (bar !== state.cursorBar || beat !== state.cursorBeat) {
+        state.cursorBar  = bar;
+        state.cursorBeat = beat;
+        updatePositionDisplay(bar, beat);
+      }
+    }
+    rafId = requestAnimationFrame(loop);
+  })();
 }
 
 function stopRaf() {
@@ -1463,8 +1484,9 @@ async function saveSession() {
     version:           2,
     events:            state.events,
     currentTakeId:     state.currentTakeId,
-    recordingStartBar: state.recordingStartBar,
-    cursorBar:         state.cursorBar,
+    recordingStartBar:    state.recordingStartBar,
+    recordingBeatsPerBar: state.recordingBeatsPerBar,
+    cursorBar:            state.cursorBar,
     cursorBeat:        state.cursorBeat,
     bpm:               state.bpm,
     beatsPerBar:       state.beatsPerBar,
@@ -1498,9 +1520,10 @@ async function loadSession() {
 
     stopAll();
     state.events            = p.events;
-    state.currentTakeId     = p.currentTakeId     ?? 1;
-    state.recordingStartBar = p.recordingStartBar ?? 1;
-    state.cursorBar         = p.cursorBar         ?? 1;
+    state.currentTakeId          = p.currentTakeId          ?? 1;
+    state.recordingStartBar      = p.recordingStartBar      ?? 1;
+    state.recordingBeatsPerBar   = p.recordingBeatsPerBar   ?? p.beatsPerBar ?? 4;
+    state.cursorBar              = p.cursorBar              ?? 1;
     state.cursorBeat        = p.cursorBeat        ?? 1;
     state.hasTake           = state.events.length > 0;
     state.preTakeBar        = state.cursorBar;
