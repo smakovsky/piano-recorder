@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Piano MIDI Recorder</title>
+<script src="https://cdn.jsdelivr.net/npm/jzz"></script>
+<script src="https://cdn.jsdelivr.net/npm/jzz-midi-smf"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f0f12;
+    --surface: #1a1a22;
+    --surface2: #22222e;
+    --border: #2e2e3e;
+    --accent: #e53935;
+    --accent-hover: #c62828;
+    --green: #43a047;
+    --blue: #1e88e5;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --text-muted: #555;
+    --record-glow: rgba(229, 57, 53, 0.4);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+  }
+
+  h1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  /* ── TOP BAR ── */
+  .top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    align-items: flex-end;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  select, input[type="number"] {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  select { min-width: 140px; cursor: pointer; }
+  input[type="number"] { width: 80px; }
+
+  select:focus, input[type="number"]:focus { border-color: var(--blue); }
+
+  /* ── TRANSPORT ── */
+  .transport {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    padding: 40px 20px;
+  }
+
+  .buttons {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+
+  button {
+    border: none;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+    padding: 0 24px;
+    height: 48px;
+    outline: none;
+  }
+
+  button:active { transform: scale(0.97); }
+
+  .btn-record {
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    height: 56px;
+    padding: 0 32px;
+    position: relative;
+  }
+
+  .btn-record:hover { background: var(--accent-hover); box-shadow: 0 0 20px var(--record-glow); }
+  .btn-record.recording {
+    animation: pulse-rec 1s ease-in-out infinite;
+    box-shadow: 0 0 24px var(--record-glow);
+  }
+
+  @keyframes pulse-rec {
+    0%, 100% { box-shadow: 0 0 16px var(--record-glow); }
+    50%       { box-shadow: 0 0 36px var(--record-glow); }
+  }
+
+  .btn-play  { background: var(--green); color: #fff; }
+  .btn-play:hover { background: #388e3c; }
+  .btn-play.playing { background: #2e7d32; }
+
+  .btn-stop  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-stop:hover { background: #2a2a38; }
+
+  .btn-undo  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-undo:hover { background: #2a2a38; }
+
+  .btn-export { background: var(--blue); color: #fff; }
+  .btn-export:hover { background: #1565c0; }
+
+  .btn-save  { background: var(--green); color: #fff; }
+  .btn-save:hover { background: #388e3c; }
+
+  .btn-load  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-load:hover { background: #2a2a38; }
+
+  .btn-panic { background: #6a1a1a; color: #ff8a80; border: 1px solid #b71c1c; }
+  .btn-panic:hover { background: #b71c1c; color: #fff; }
+
+  button:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+  /* ── POSITION DISPLAY ── */
+  .position-display {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+  }
+
+  .pos-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .pos-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .pos-value {
+    font-size: 36px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    min-width: 60px;
+    text-align: center;
+  }
+
+  .pos-separator {
+    font-size: 28px;
+    color: var(--text-muted);
+    margin-top: 6px;
+  }
+
+  .status-display {
+    font-size: 13px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    min-height: 20px;
+    text-align: center;
+  }
+
+  .status-display.recording { color: var(--accent); }
+  .status-display.playing   { color: var(--green); }
+
+  /* ── BOTTOM BAR ── */
+  .bottom-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .take-info {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex: 1;
+  }
+
+  /* ── METRONOME VOLUME ── */
+  .metro-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .metro-field label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .volume-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 100px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .vol-value {
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 30px;
+    text-align: right;
+  }
+
+  /* ── SHORTCUTS PANEL ── */
+  .shortcuts {
+    padding: 10px 20px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .shortcut-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  kbd {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* ── ERROR BANNER ── */
+  .error-banner {
+    background: #b71c1c;
+    color: #fff;
+    padding: 16px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    display: none;
+  }
+
+  .error-banner.visible { display: block; }
+
+  /* ── SHORTCUT CONFIG MODAL ── */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+    display: none;
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    min-width: 380px;
+    max-width: 90vw;
+  }
+
+  .modal h2 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+
+  .shortcut-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    gap: 12px;
+  }
+
+  .shortcut-row span {
+    font-size: 13px;
+    color: var(--text);
+    flex: 1;
+  }
+
+  .key-capture {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    min-width: 140px;
+    text-align: center;
+    font-family: monospace;
+    transition: border-color 0.15s;
+  }
+
+  .key-capture.capturing {
+    border-color: var(--blue);
+    color: var(--blue);
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+  }
+
+  .btn-sm {
+    height: 34px;
+    padding: 0 16px;
+    font-size: 12px;
+  }
+
+  .btn-cancel { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-cancel:hover { background: #2a2a38; }
+  .btn-save { background: var(--blue); color: #fff; }
+  .btn-save:hover { background: #1565c0; }
+
+  /* ── PIANO ROLL ── */
+  .piano-roll-wrap {
+    height: 180px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  #pianoRoll {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div class="error-banner" id="errorBanner"></div>
+
+<h1>Piano MIDI Recorder</h1>
+
+<!-- TOP BAR -->
+<div class="top-bar">
+  <div class="field">
+    <label>Time Signature</label>
+    <select id="timeSig">
+      <option value="2">2/4</option>
+      <option value="3">3/4</option>
+      <option value="4" selected>4/4</option>
+      <option value="6">6/8</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>BPM</label>
+    <input type="number" id="bpmInput" value="120" min="20" max="300">
+  </div>
+  <div class="field">
+    <label>Start Bar</label>
+    <input type="number" id="startBarInput" value="1" min="1">
+  </div>
+  <div class="field">
+    <label>MIDI Input</label>
+    <select id="midiInputSelect"><option value="">-- No devices --</option></select>
+  </div>
+  <div class="field">
+    <label>MIDI Output</label>
+    <select id="midiOutputSelect"><option value="">-- No devices --</option></select>
+  </div>
+  <div class="metro-field">
+    <label>Metronome Volume</label>
+    <div class="volume-row">
+      <input type="range" id="metroVolume" min="0" max="127" value="90">
+      <span class="vol-value" id="metroVolVal">90</span>
+    </div>
+  </div>
+  <div class="field" style="margin-left:auto;">
+    <label>&nbsp;</label>
+    <button class="btn-stop btn-sm" id="configShortcutsBtn" style="font-size:11px;height:34px;padding:0 12px;">Configure Keys</button>
+  </div>
+</div>
+
+<!-- TRANSPORT -->
+<div class="transport">
+  <div class="position-display">
+    <div class="pos-block">
+      <div class="pos-label">Bar</div>
+      <div class="pos-value" id="posBar">1</div>
+    </div>
+    <div class="pos-separator">:</div>
+    <div class="pos-block">
+      <div class="pos-label">Beat</div>
+      <div class="pos-value" id="posBeat">1</div>
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button class="btn-undo" id="btnUndo">&#8592; Undo</button>
+    <button class="btn-record" id="btnRecord">&#9679; Record</button>
+    <button class="btn-play"  id="btnPlay">&#9654; Play</button>
+    <button class="btn-stop"  id="btnStop">&#9632; Stop</button>
+  </div>
+
+  <div class="status-display" id="statusDisplay">Ready</div>
+</div>
+
+<!-- PIANO ROLL -->
+<div class="piano-roll-wrap">
+  <canvas id="pianoRoll"></canvas>
+</div>
+
+<!-- BOTTOM BAR -->
+<div class="bottom-bar">
+  <button class="btn-export" id="btnExport">Export MIDI</button>
+  <button class="btn-save"   id="btnSave">Save Session</button>
+  <button class="btn-load"   id="btnLoad">Load Session</button>
+  <button class="btn-panic"  id="btnPanic">Panic</button>
+  <div class="take-info" id="takeInfo">No recording</div>
+</div>
+
+<!-- SHORTCUTS LEGEND -->
+<div class="shortcuts">
+  <div class="shortcut-item"><kbd id="kbdRecord">R</kbd> Record</div>
+  <div class="shortcut-item"><kbd>Space</kbd> Play / Stop</div>
+  <div class="shortcut-item"><kbd>⌘Z</kbd> Undo</div>
+  <div class="shortcut-item"><kbd id="kbdPrevBar">Fn+Shift+←</kbd> Prev Bar</div>
+  <div class="shortcut-item"><kbd id="kbdNextBar">Fn+Shift+→</kbd> Next Bar</div>
+  <div class="shortcut-item"><kbd id="kbdGoStart">Fn+Shift+↑</kbd> Go to Start</div>
+  <div class="shortcut-item"><kbd id="kbdGoEnd">Fn+Shift+↓</kbd> Go to End</div>
+</div>
+
+<!-- SHORTCUT CONFIG MODAL -->
+<div class="modal-overlay" id="shortcutModal">
+  <div class="modal">
+    <h2>Configure Navigation Keys</h2>
+    <div class="shortcut-row">
+      <span>Previous Bar</span>
+      <div class="key-capture" id="capPrevBar" data-action="prevBar">Fn+Shift+←</div>
+    </div>
+    <div class="shortcut-row">
+      <span>Next Bar</span>
+      <div class="key-capture" id="capNextBar" data-action="nextBar">Fn+Shift+→</div>
+    </div>
+    <div class="shortcut-row">
+      <span>Go to Start</span>
+      <div class="key-capture" id="capGoStart" data-action="goStart">Fn+Shift+↑</div>
+    </div>
+    <div class="shortcut-row">
+      <span>Go to End</span>
+      <div class="key-capture" id="capGoEnd" data-action="goEnd">Fn+Shift+↓</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel btn-sm" id="modalCancel">Cancel</button>
+      <button class="btn-save   btn-sm" id="modalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════
+const state = {
+  // transport
+  mode: 'stopped',   // 'stopped' | 'recording' | 'playing'
+  // position (1-based bar, 1-based beat)
+  cursorBar:  1,
+  cursorBeat: 1,
+  // session settings (read fresh each action)
+  get bpm()       { return Math.min(300, Math.max(20, parseInt(document.getElementById('bpmInput').value) || 120)); },
+  get beatsPerBar(){ return parseInt(document.getElementById('timeSig').value) || 4; },
+  get startBar()  { return Math.max(1, parseInt(document.getElementById('startBarInput').value) || 1); },
+  // recording
+  recordingStartTime: null,   // performance.now() when capture began
+  recordingStartBar:  1,      // global timeline origin (set on first take, reset on full undo)
+  events: [],                 // { deltaMs, msg, takeId } — sorted by deltaMs across all takes
+  currentTakeId:     0,       // increments each record press
+  currentTakeOffset: 0,       // ms from global origin to current take's bar 1
+  preTakeBar:        1,       // cursor bar saved at start of last take (for auto-return)
+  // playback
+  playbackStartTime: null,
+  playbackCursorMs:  0,       // ms offset into events at playback start
+  playbackTimer:     null,
+  // metronome
+  metroTimer:  null,
+  metroBeat:   0,             // current beat index (0-based within bar)
+  metroBar:    1,             // current bar number
+  metroNextTime: 0,           // scheduled next tick (performance.now)
+  // recording timeline anchors (set in startRecording)
+  recordingRealStartTime: 0,
+  recordingStartOffsetMs: 0,
+  // recording info
+  hasTake: false,
+  takeEventCount: 0,
+  // MIDI
+  jzzReady: false,
+  midiInput:  null,
+  midiOutput: null,
+};
+
+// Shortcut config: stored as { key, code, shift, ctrl, alt, meta }
+let shortcuts = loadShortcuts();
+
+function loadShortcuts() {
+  try {
+    const s = JSON.parse(localStorage.getItem('piano_recorder_shortcuts'));
+    if (s && s.prevBar) return s;
+  } catch(e) {}
+  return {
+    prevBar:  { code: 'ArrowLeft',  shift: true, ctrl: false, alt: false, meta: false },
+    nextBar:  { code: 'ArrowRight', shift: true, ctrl: false, alt: false, meta: false },
+    goStart:  { code: 'ArrowUp',    shift: true, ctrl: false, alt: false, meta: false },
+    goEnd:    { code: 'ArrowDown',  shift: true, ctrl: false, alt: false, meta: false },
+  };
+}
+
+function saveShortcuts() {
+  localStorage.setItem('piano_recorder_shortcuts', JSON.stringify(shortcuts));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DOM REFS
+// ═══════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const errorBanner      = $('errorBanner');
+const posBar           = $('posBar');
+const posBeat          = $('posBeat');
+const statusDisplay    = $('statusDisplay');
+const btnRecord        = $('btnRecord');
+const btnPlay          = $('btnPlay');
+const btnStop          = $('btnStop');
+const btnUndo          = $('btnUndo');
+const btnExport        = $('btnExport');
+const takeInfo         = $('takeInfo');
+const midiInputSelect  = $('midiInputSelect');
+const midiOutputSelect = $('midiOutputSelect');
+const metroVolumeSlider= $('metroVolume');
+const metroVolVal      = $('metroVolVal');
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function msPerBeat() { return 60000 / state.bpm; }
+function msPerBar()  { return msPerBeat() * state.beatsPerBar; }
+
+function totalRecordingMs() {
+  if (!state.hasTake || state.events.length === 0) return 0;
+  return state.events[state.events.length - 1].deltaMs;
+}
+
+function totalRecordingBars() {
+  const ms = totalRecordingMs();
+  return Math.max(0, Math.ceil(ms / msPerBar()));
+}
+
+function barBeatFromMs(ms) {
+  const barLen = msPerBar();
+  const beatLen = msPerBeat();
+  const bar  = Math.floor(ms / barLen) + state.recordingStartBar;
+  const beat = Math.floor((ms % barLen) / beatLen) + 1;
+  return { bar, beat };
+}
+
+function updatePositionDisplay(bar, beat) {
+  posBar.textContent  = bar;
+  posBeat.textContent = beat;
+}
+
+function setStatus(msg, cls) {
+  statusDisplay.textContent = msg;
+  statusDisplay.className = 'status-display' + (cls ? ' ' + cls : '');
+}
+
+function updateTakeInfo() {
+  if (!state.hasTake) {
+    takeInfo.textContent = 'No recording';
+  } else {
+    const bars = totalRecordingBars();
+    takeInfo.textContent = `${state.currentTakeId} take${state.currentTakeId !== 1 ? 's' : ''} · ${state.events.length} events · ~${bars} bar${bars !== 1 ? 's' : ''}`;
+  }
+}
+
+function showError(msg) {
+  errorBanner.textContent = msg;
+  errorBanner.classList.add('visible');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MIDI OUTPUT
+// ═══════════════════════════════════════════════════════════════
+function midiSend(msgArray) {
+  if (!state.midiOutput) return;
+  try { state.midiOutput.send(msgArray); } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// METRONOME
+// ═══════════════════════════════════════════════════════════════
+function scheduleMetroBeat() {
+  if (!state.midiOutput) return;
+  const beatIndex = state.metroBeat % state.beatsPerBar;
+  const vol = parseInt(metroVolumeSlider.value);
+  if (vol <= 0) return;
+  const vel = beatIndex === 0 ? vol : Math.round(vol * 0.7);
+  const note = 42; // closed hi-hat
+  midiSend([0x99, note, vel]);
+  setTimeout(() => midiSend([0x89, note, 0]), 30);
+}
+
+function metronomeLoop() {
+  const now = performance.now();
+  const drift = now - state.metroNextTime;
+
+  scheduleMetroBeat();
+
+  // advance
+  state.metroBeat++;
+  if (state.metroBeat % state.beatsPerBar === 0) {
+    state.metroBar++;
+  }
+
+  const beatLen = msPerBeat();
+  state.metroNextTime += beatLen;
+  const delay = Math.max(0, state.metroNextTime - performance.now());
+
+  state.metroTimer = setTimeout(metronomeLoop, delay);
+}
+
+function startMetronome(fromBar) {
+  stopMetronome();
+  state.metroBar  = fromBar;
+  state.metroBeat = 0;
+  state.metroNextTime = performance.now();
+  metronomeLoop();
+}
+
+function stopMetronome() {
+  if (state.metroTimer) { clearTimeout(state.metroTimer); state.metroTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RECORDING
+// ═══════════════════════════════════════════════════════════════
+function startRecording() {
+  if (state.mode === 'recording') return;
+  stopAll();
+
+  state.preTakeBar = state.cursorBar;
+
+  // On the very first take, fix the global origin; subsequent takes extend it
+  if (!state.hasTake) {
+    state.recordingStartBar = state.cursorBar;
+    state.events = [];
+    state.currentTakeId = 0;
+  }
+
+  state.currentTakeId++;
+  state.currentTakeOffset = (state.cursorBar - state.recordingStartBar) * msPerBar();
+
+  state.mode = 'recording';
+  state.recordingStartTime = performance.now();
+  // Real-wall-clock anchor for the piano-roll playhead (same role as playbackRealStartTime)
+  state.recordingRealStartTime = performance.now();
+  // The recording-timeline ms position where this take begins (for playhead math)
+  state.recordingStartOffsetMs = state.currentTakeOffset;
+
+  updatePositionDisplay(state.cursorBar, 1);
+  setStatus(`Recording take ${state.currentTakeId}…`, 'recording');
+  btnRecord.classList.add('recording');
+
+  startMetronome(state.cursorBar);
+  schedulePlaybackDuringRecording();
+  startRaf();
+}
+
+function handleMidiInput(msg) {
+  const incoming = Array.from(msg);
+
+  // Route to output so keyboard sounds (local control is OFF)
+  midiSend(incoming);
+
+  if (state.mode !== 'recording') return;
+  const now = performance.now();
+  const deltaMs = (now - state.recordingStartTime) + state.currentTakeOffset;
+  state.events.push({ deltaMs, msg: incoming, takeId: state.currentTakeId });
+
+  // update bar/beat display
+  const { bar, beat } = barBeatFromMs(deltaMs);
+  state.cursorBar  = bar;
+  state.cursorBeat = beat;
+  updatePositionDisplay(bar, beat);
+}
+
+// Play back already-recorded events that fall within this take's time window,
+// so the performer hears what was previously recorded while overdubbing.
+function schedulePlaybackDuringRecording() {
+  if (!state.hasTake || state.events.length === 0) return;
+
+  const recordingId = state.recordingStartTime;
+  const startOffsetMs = state.recordingStartOffsetMs;
+
+  // Find events that start at or after the current take position
+  const eventsToPlay = state.events.filter(e => e.deltaMs >= startOffsetMs);
+  if (eventsToPlay.length === 0) return;
+
+  function fireNext(idx) {
+    if (state.mode !== 'recording' || state.recordingStartTime !== recordingId) return;
+    if (idx >= eventsToPlay.length) return;
+
+    const ev = eventsToPlay[idx];
+    const relativeMs = ev.deltaMs - startOffsetMs;
+    const targetWall = state.recordingRealStartTime + relativeMs;
+    const delay = Math.max(0, targetWall - performance.now());
+
+    setTimeout(() => {
+      if (state.mode !== 'recording' || state.recordingStartTime !== recordingId) return;
+      midiSend(ev.msg);
+      fireNext(idx + 1);
+    }, delay);
+  }
+
+  fireNext(0);
+}
+
+function stopRecording() {
+  if (state.mode !== 'recording') return;
+  stopMetronome();
+  allNotesOff();
+
+  // merge takes: sort all events by time
+  state.events.sort((a, b) => a.deltaMs - b.deltaMs);
+
+  state.mode = 'stopped';
+  state.hasTake = true;
+
+  // return cursor to where this take started (easy re-take workflow)
+  state.cursorBar  = state.preTakeBar;
+  state.cursorBeat = 1;
+  updatePositionDisplay(state.cursorBar, state.cursorBeat);
+
+  btnRecord.classList.remove('recording');
+  setStatus(`Take ${state.currentTakeId} done — ${state.events.length} events total`);
+  updateTakeInfo();
+  noteSegments = computeNoteSegments(state.events);
+  stopRaf();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PLAYBACK
+// ═══════════════════════════════════════════════════════════════
+function startPlayback() {
+  if (state.mode === 'playing') return;
+  if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to play'); return; }
+  stopAll();
+
+  // find offset: events from cursor position onward
+  const cursorOffsetMs = (state.cursorBar - state.recordingStartBar) * msPerBar()
+                       + (state.cursorBeat - 1) * msPerBeat();
+  const startIdx = state.events.findIndex(e => e.deltaMs >= cursorOffsetMs);
+  if (startIdx === -1) { setStatus('Cursor past end of recording'); return; }
+
+  state.mode = 'playing';
+  state.playbackStartTime = performance.now();
+  state.playbackRealStartTime = performance.now();
+  state.playbackStartRecordingMs = cursorOffsetMs;
+  btnPlay.classList.add('playing');
+  btnPlay.textContent = '⏸ Pause';
+  setStatus('Playing...', 'playing');
+
+  schedulePlayback(startIdx, cursorOffsetMs);
+  startRaf();
+}
+
+function schedulePlayback(startIdx, offsetMs) {
+  const playbackId = state.playbackStartTime; // used to cancel stale timers
+
+  function fire(idx) {
+    if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
+    if (idx >= state.events.length) {
+      // done
+      stopAll();
+      setStatus('Playback finished');
+      return;
+    }
+
+    const ev = state.events[idx];
+    const delay = Math.max(0, state.playbackStartTime + (ev.deltaMs - offsetMs) - performance.now());
+
+    state.playbackTimer = setTimeout(() => {
+      if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
+
+      // send event
+      midiSend(ev.msg);
+
+      // update display
+      const { bar, beat } = barBeatFromMs(ev.deltaMs);
+      state.cursorBar  = bar;
+      state.cursorBeat = beat;
+      updatePositionDisplay(bar, beat);
+
+      fire(idx + 1);
+    }, delay);
+  }
+
+  fire(startIdx);
+}
+
+function allNotesOff() {
+  for (let ch = 0; ch < 16; ch++) {
+    midiSend([0xB0 | ch, 123, 0]); // all notes off
+    midiSend([0xB0 | ch, 120, 0]); // all sound off
+  }
+}
+
+function stopAll() {
+  stopRaf();
+  stopMetronome();
+  if (state.playbackTimer) { clearTimeout(state.playbackTimer); state.playbackTimer = null; }
+  allNotesOff();
+  if (state.mode === 'playing') {
+    btnPlay.classList.remove('playing');
+    btnPlay.textContent = '▶ Play';
+  }
+  if (state.mode === 'recording') {
+    btnRecord.classList.remove('recording');
+  }
+  state.mode = 'stopped';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UNDO
+// ═══════════════════════════════════════════════════════════════
+function undo() {
+  stopAll();
+
+  if (state.currentTakeId > 0) {
+    // Remove only the most recent take
+    state.events = state.events.filter(e => e.takeId !== state.currentTakeId);
+    state.currentTakeId--;
+  }
+
+  state.hasTake = state.events.length > 0;
+
+  if (!state.hasTake) {
+    // All takes gone: reset origin so next recording starts fresh
+    state.recordingStartBar = state.startBar;
+    state.currentTakeId = 0;
+  }
+
+  // Return cursor to where this take started
+  state.cursorBar  = state.preTakeBar;
+  state.cursorBeat = 1;
+  noteSegments = state.hasTake ? computeNoteSegments(state.events) : [];
+  updatePositionDisplay(state.cursorBar, 1);
+  setStatus(state.hasTake
+    ? `Take ${state.currentTakeId + 1} undone — ${state.events.length} events remain`
+    : `All takes cleared — ready from Bar ${state.startBar}`);
+  updateTakeInfo();
+  renderPianoRoll();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════════
+function navPrevBar() {
+  stopAll();
+  state.cursorBar  = Math.max(1, state.cursorBar - 1);
+  state.cursorBeat = 1;
+  updatePositionDisplay(state.cursorBar, state.cursorBeat);
+  setStatus(`Bar ${state.cursorBar}`);
+  renderPianoRoll();
+}
+
+function navNextBar() {
+  stopAll();
+  const maxBar = state.hasTake ? (state.recordingStartBar + totalRecordingBars()) : state.cursorBar + 1;
+  state.cursorBar  = Math.min(maxBar, state.cursorBar + 1);
+  state.cursorBeat = 1;
+  updatePositionDisplay(state.cursorBar, state.cursorBeat);
+  setStatus(`Bar ${state.cursorBar}`);
+  renderPianoRoll();
+}
+
+function navGoStart() {
+  stopAll();
+  state.cursorBar  = state.hasTake ? state.recordingStartBar : state.startBar;
+  state.cursorBeat = 1;
+  updatePositionDisplay(state.cursorBar, state.cursorBeat);
+  setStatus(`Bar ${state.cursorBar}`);
+  renderPianoRoll();
+}
+
+function navGoEnd() {
+  stopAll();
+  if (!state.hasTake) return;
+  const endMs = totalRecordingMs();
+  const { bar } = barBeatFromMs(endMs);
+  state.cursorBar  = bar;
+  state.cursorBeat = 1;
+  updatePositionDisplay(state.cursorBar, state.cursorBeat);
+  setStatus(`End — Bar ${state.cursorBar}`);
+  renderPianoRoll();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CC64 CLEANUP
+// ═══════════════════════════════════════════════════════════════
+function cleanCC64(events) {
+  return events.filter(ev => {
+    const msg = ev.msg;
+    // CC message: status byte 0xBn (176-191), controller 64
+    if ((msg[0] & 0xF0) === 0xB0 && msg[1] === 64) {
+      const val = msg[2];
+      return val === 0 || val === 127;
+    }
+    return true;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MIDI EXPORT
+// ═══════════════════════════════════════════════════════════════
+function exportMidi() {
+  if (!state.hasTake || state.events.length === 0) {
+    setStatus('Nothing to export');
+    return;
+  }
+
+  const cleaned = cleanCC64(state.events);
+  const PPQ = 480;
+  const bpm = state.bpm;
+  const beatsPerBar = state.beatsPerBar;
+  const usPerBeat = Math.round(60000000 / bpm);
+  const msPerTick = 60000 / bpm / PPQ;
+
+  // Build SMF Type 0
+  const smf = new JZZ.MIDI.SMF(0, PPQ);
+  const trk = new JZZ.MIDI.SMF.MTrk();
+  smf.push(trk);
+
+  // Tempo
+  trk.add(0, JZZ.MIDI.smfTempo(usPerBeat));
+
+  // Time signature (numerator, denominator as power of 2)
+  const denomPow = beatsPerBar === 6 ? 3 : 2;  // 6/8 → denom=8=2^3, others → 4=2^2
+  const numerator = beatsPerBar;
+  trk.add(0, JZZ.MIDI.smfTimeSignature(numerator, denomPow, 24, 8));
+
+  // Add events
+  let prevTick = 0;
+  for (const ev of cleaned) {
+    const tick = Math.round(ev.deltaMs / msPerTick);
+    const delta = Math.max(0, tick - prevTick);
+    const msg = ev.msg;
+
+    let midiMsg;
+    const status = msg[0] & 0xF0;
+    const ch = (msg[0] & 0x0F) + 1;
+
+    if (status === 0x90) {
+      midiMsg = JZZ.MIDI.noteOn(ch, msg[1], msg[2]);
+    } else if (status === 0x80) {
+      midiMsg = JZZ.MIDI.noteOff(ch, msg[1], msg[2]);
+    } else if (status === 0xB0) {
+      midiMsg = JZZ.MIDI.control(ch, msg[1], msg[2]);
+    } else if (status === 0xE0) {
+      midiMsg = JZZ.MIDI.pitchBend(ch, msg[1] | (msg[2] << 7));
+    } else if (status === 0xA0) {
+      midiMsg = JZZ.MIDI.aftertouch(ch, msg[1], msg[2]);
+    } else if (status === 0xD0) {
+      midiMsg = JZZ.MIDI.pressure(ch, msg[1]);
+    } else if (status === 0xC0) {
+      midiMsg = JZZ.MIDI.program(ch, msg[1]);
+    } else {
+      continue; // skip sysex etc.
+    }
+
+    trk.add(delta, midiMsg);
+    prevTick = tick;
+  }
+
+  // End of track
+  trk.add(0, JZZ.MIDI.smfEndOfTrack());
+
+  // Trigger download
+  const data = smf.dump();
+  const bytes = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'audio/midi' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `recording.mid`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus('Exported recording.mid');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MIDI SETUP (JZZ)
+// ═══════════════════════════════════════════════════════════════
+let jzzEngine = null;
+
+function initMidi() {
+  if (!navigator.requestMIDIAccess && !window.JZZ) {
+    showError('Please open in Google Chrome for MIDI support');
+    return;
+  }
+
+  JZZ().or(function() {
+    showError('Could not initialize Web MIDI. Please open in Google Chrome.');
+  }).and(function() {
+    jzzEngine = this;
+    state.jzzReady = true;
+    populateDevices();
+  });
+}
+
+function populateDevices() {
+  if (!jzzEngine) return;
+
+  const info = jzzEngine.info();
+  const inputs  = info.inputs  || [];
+  const outputs = info.outputs || [];
+
+  // Inputs
+  midiInputSelect.innerHTML = '';
+  if (inputs.length === 0) {
+    midiInputSelect.innerHTML = '<option value="">No MIDI devices — plug in and refresh</option>';
+    showError('No MIDI input devices detected — plug in your piano and refresh the page');
+  } else {
+    inputs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = d.name;
+      midiInputSelect.appendChild(opt);
+    });
+    connectInput(0);
+  }
+
+  // Outputs
+  midiOutputSelect.innerHTML = '';
+  if (outputs.length === 0) {
+    midiOutputSelect.innerHTML = '<option value="">No output — metronome &amp; playback unavailable</option>';
+  } else {
+    outputs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = d.name;
+      midiOutputSelect.appendChild(opt);
+    });
+    connectOutput(0);
+  }
+}
+
+function connectInput(idx) {
+  try {
+    if (state.midiInput) state.midiInput.close();
+    const port = jzzEngine.openMidiIn(idx);
+    port.connect(handleMidiInput);
+    state.midiInput = port;
+  } catch(e) { console.warn('MIDI input connect error', e); }
+}
+
+function connectOutput(idx) {
+  try {
+    if (state.midiOutput) state.midiOutput.close();
+    state.midiOutput = jzzEngine.openMidiOut(idx);
+  } catch(e) { console.warn('MIDI output connect error', e); }
+}
+
+midiInputSelect.addEventListener('change', () => {
+  const idx = midiInputSelect.value;
+  if (idx !== '') connectInput(parseInt(idx));
+});
+
+midiOutputSelect.addEventListener('change', () => {
+  const idx = midiOutputSelect.value;
+  if (idx !== '') connectOutput(parseInt(idx));
+});
+
+// ═══════════════════════════════════════════════════════════════
+// KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════════════════════════
+function matchesShortcut(e, sc) {
+  return e.code  === sc.code
+      && !!e.shiftKey === !!sc.shift
+      && !!e.ctrlKey  === !!sc.ctrl
+      && !!e.altKey   === !!sc.alt
+      && !!e.metaKey  === !!sc.meta;
+}
+
+document.addEventListener('keydown', e => {
+  // Don't fire shortcuts when typing in inputs
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  // Don't fire when capturing keys in modal
+  if (document.querySelector('.key-capture.capturing')) return;
+
+  // R — record
+  if (e.code === 'KeyR' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    startRecording();
+    return;
+  }
+
+  // Space — play/stop toggle
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state.mode === 'playing') { stopAll(); setStatus('Stopped'); }
+    else if (state.mode === 'recording') { stopRecording(); }
+    else { startPlayback(); }
+    return;
+  }
+
+  // Cmd+Z — undo
+  if (e.code === 'KeyZ' && e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    undo();
+    return;
+  }
+
+  // Navigation shortcuts
+  if (matchesShortcut(e, shortcuts.prevBar))  { e.preventDefault(); navPrevBar(); return; }
+  if (matchesShortcut(e, shortcuts.nextBar))  { e.preventDefault(); navNextBar(); return; }
+  if (matchesShortcut(e, shortcuts.goStart))  { e.preventDefault(); navGoStart(); return; }
+  if (matchesShortcut(e, shortcuts.goEnd))    { e.preventDefault(); navGoEnd();   return; }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// BUTTON CLICK HANDLERS
+// ═══════════════════════════════════════════════════════════════
+btnRecord.addEventListener('click', startRecording);
+btnPlay.addEventListener('click', () => {
+  if (state.mode === 'playing') { stopAll(); setStatus('Stopped'); }
+  else startPlayback();
+});
+btnStop.addEventListener('click', () => {
+  if (state.mode === 'recording') stopRecording();
+  else { stopAll(); setStatus('Stopped'); }
+});
+btnUndo.addEventListener('click', undo);
+btnExport.addEventListener('click', exportMidi);
+
+$('btnPanic').addEventListener('click', () => {
+  allNotesOff();
+  setStatus('Panic — all notes off');
+});
+
+metroVolumeSlider.addEventListener('input', () => {
+  metroVolVal.textContent = metroVolumeSlider.value;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SHORTCUT CONFIG MODAL
+// ═══════════════════════════════════════════════════════════════
+const modal       = $('shortcutModal');
+const modalCancel = $('modalCancel');
+const modalSave   = $('modalSave');
+let capturingEl   = null;
+let pendingShortcuts = {};
+
+function shortcutLabel(sc) {
+  const parts = [];
+  if (sc.ctrl)  parts.push('Ctrl');
+  if (sc.alt)   parts.push('Alt');
+  if (sc.shift) parts.push('Shift');
+  if (sc.meta)  parts.push('⌘');
+  const keyLabel = {
+    ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
+  }[sc.code] || sc.code.replace('Key','').replace('Digit','');
+  parts.push(keyLabel);
+  return parts.join('+');
+}
+
+function refreshCapButtons() {
+  ['prevBar','nextBar','goStart','goEnd'].forEach(action => {
+    const el = document.getElementById('cap' + action.charAt(0).toUpperCase() + action.slice(1));
+    if (el) el.textContent = shortcutLabel(pendingShortcuts[action]);
+  });
+}
+
+function updateShortcutLegend() {
+  $('kbdPrevBar').textContent = shortcutLabel(shortcuts.prevBar);
+  $('kbdNextBar').textContent = shortcutLabel(shortcuts.nextBar);
+  $('kbdGoStart').textContent = shortcutLabel(shortcuts.goStart);
+  $('kbdGoEnd').textContent   = shortcutLabel(shortcuts.goEnd);
+}
+
+$('configShortcutsBtn').addEventListener('click', () => {
+  pendingShortcuts = JSON.parse(JSON.stringify(shortcuts));
+  refreshCapButtons();
+  modal.classList.add('open');
+});
+
+modalCancel.addEventListener('click', () => {
+  if (capturingEl) { capturingEl.classList.remove('capturing'); capturingEl = null; }
+  modal.classList.remove('open');
+});
+
+modalSave.addEventListener('click', () => {
+  if (capturingEl) { capturingEl.classList.remove('capturing'); capturingEl = null; }
+  shortcuts = pendingShortcuts;
+  saveShortcuts();
+  updateShortcutLegend();
+  modal.classList.remove('open');
+});
+
+document.querySelectorAll('.key-capture').forEach(el => {
+  el.addEventListener('click', () => {
+    if (capturingEl) capturingEl.classList.remove('capturing');
+    capturingEl = el;
+    el.classList.add('capturing');
+    el.textContent = 'Press key combo...';
+  });
+});
+
+document.addEventListener('keydown', e => {
+  if (!capturingEl) return;
+  // Ignore pure modifier keydowns
+  if (['Shift','Control','Alt','Meta'].includes(e.key)) return;
+  e.preventDefault();
+
+  const sc = {
+    code:  e.code,
+    shift: e.shiftKey,
+    ctrl:  e.ctrlKey,
+    alt:   e.altKey,
+    meta:  e.metaKey,
+  };
+
+  const action = capturingEl.dataset.action;
+  pendingShortcuts[action] = sc;
+  capturingEl.textContent = shortcutLabel(sc);
+  capturingEl.classList.remove('capturing');
+  capturingEl = null;
+}, true);
+
+// ═══════════════════════════════════════════════════════════════
+// PIANO ROLL
+// ═══════════════════════════════════════════════════════════════
+const pianoRoll = $('pianoRoll');
+const prCtx     = pianoRoll.getContext('2d');
+let noteSegments = [];
+let rafId = null;
+
+function computeNoteSegments(events) {
+  const segs = [];
+  const open = {};
+  const endMs = events.length ? events[events.length - 1].deltaMs : 0;
+  for (const ev of events) {
+    const m  = ev.msg;
+    const st = m[0] & 0xF0;
+    const key = `${m[0] & 0x0F}_${m[1]}`;
+    if (st === 0x90 && m[2] > 0) {
+      open[key] = { startMs: ev.deltaMs, pitch: m[1], vel: m[2] };
+    } else if (st === 0x80 || (st === 0x90 && m[2] === 0)) {
+      if (open[key]) {
+        segs.push({ ...open[key], endMs: ev.deltaMs });
+        delete open[key];
+      }
+    }
+  }
+  for (const key in open) segs.push({ ...open[key], endMs });
+  return segs;
+}
+
+function renderPianoRoll() {
+  const W = pianoRoll.clientWidth;
+  const H = pianoRoll.clientHeight;
+  if (W === 0 || H === 0) return;
+  pianoRoll.width  = W;
+  pianoRoll.height = H;
+
+  const isRecording = state.mode === 'recording';
+  const isPlaying   = state.mode === 'playing';
+  const barMs  = msPerBar();
+  const beatMs = msPerBeat();
+
+  // background
+  prCtx.fillStyle = '#0d0d14';
+  prCtx.fillRect(0, 0, W, H);
+
+  // Fixed visible window: always show WINDOW_BARS bars.
+  // During playback/recording the playhead is pinned at CURSOR_X (25% from left)
+  // and content scrolls. When stopped, center the window on the cursor position.
+  const WINDOW_BARS = 8;
+  const CURSOR_X    = Math.round(W * 0.25);
+  const windowMs    = barMs * WINDOW_BARS;
+  const msPerPx     = windowMs / W;
+
+  // current playhead position in recording-timeline ms
+  let cursorMs;
+  if (isRecording) {
+    cursorMs = state.recordingStartOffsetMs + (performance.now() - state.recordingRealStartTime);
+  } else if (isPlaying) {
+    cursorMs = state.playbackStartRecordingMs + (performance.now() - state.playbackRealStartTime);
+  } else {
+    cursorMs = (state.cursorBar - state.recordingStartBar) * barMs
+             + (state.cursorBeat - 1) * beatMs;
+  }
+
+  // timeline ms that maps to pixel 0 (left edge of canvas)
+  const viewStartMs = (isRecording || isPlaying)
+    ? cursorMs - CURSOR_X * msPerPx          // scroll: cursor pinned at CURSOR_X
+    : cursorMs - CURSOR_X * msPerPx;         // stopped: same pin so cursor is always visible
+
+  function msToX(ms) { return (ms - viewStartMs) / msPerPx; }
+
+  // pitch helpers
+  const PITCH_MIN = 21, PITCH_MAX = 108;
+  const pitchRange = PITCH_MAX - PITCH_MIN;
+  const noteH = Math.max(2, H / pitchRange);
+  function pitchY(pitch) { return H - ((pitch - PITCH_MIN) / pitchRange) * H - noteH; }
+
+  // beat + bar grid
+  const firstBeat = Math.floor(viewStartMs / beatMs);
+  const lastBeat  = Math.ceil((viewStartMs + windowMs) / beatMs);
+  for (let b = firstBeat; b <= lastBeat; b++) {
+    const x = Math.round(msToX(b * beatMs));
+    if (x < -2 || x > W + 2) continue;
+    const isBarLine = b % state.beatsPerBar === 0;
+    if (isBarLine) {
+      prCtx.fillStyle = '#44445a';
+      prCtx.fillRect(x, 0, 2, H);
+      const barNum = state.recordingStartBar + Math.floor(b / state.beatsPerBar);
+      prCtx.fillStyle = '#8888bb';
+      prCtx.font = 'bold 12px monospace';
+      prCtx.fillText(barNum, x + 4, 14);
+    } else {
+      prCtx.fillStyle = '#1e1e30';
+      prCtx.fillRect(x, 0, 1, H);
+    }
+  }
+
+  // note segments (all takes)
+  for (const seg of noteSegments) {
+    const x1 = msToX(seg.startMs);
+    const x2 = Math.max(x1 + 3, msToX(seg.endMs));
+    if (x2 < 0 || x1 > W) continue;
+    const alpha = 0.55 + (seg.vel / 127) * 0.45;
+    prCtx.fillStyle = `rgba(80,190,90,${alpha.toFixed(2)})`;
+    prCtx.fillRect(x1, pitchY(seg.pitch), x2 - x1, noteH + 1);
+  }
+
+  // live note-on marks for the current recording take
+  if (isRecording) {
+    for (const ev of state.events) {
+      if (ev.takeId !== state.currentTakeId) continue;
+      const m = ev.msg;
+      if ((m[0] & 0xF0) === 0x90 && m[2] > 0) {
+        const x = msToX(ev.deltaMs);
+        if (x < 0 || x > W) continue;
+        prCtx.fillStyle = 'rgba(255,100,80,0.9)';
+        prCtx.fillRect(x, pitchY(m[1]), 3, noteH + 1);
+      }
+    }
+  }
+
+  // playhead — always at CURSOR_X when playing/recording, or computed when stopped
+  const playheadX = (isRecording || isPlaying) ? CURSOR_X : Math.round(msToX(cursorMs));
+  // glow
+  prCtx.fillStyle = isRecording ? 'rgba(255,60,60,0.18)' : (isPlaying ? 'rgba(255,255,255,0.12)' : 'rgba(120,120,220,0.12)');
+  prCtx.fillRect(playheadX - 6, 0, 14, H);
+  // line
+  prCtx.fillStyle = isRecording ? '#ff3333' : (isPlaying ? '#ffffff' : '#9090ee');
+  prCtx.fillRect(playheadX, 0, 3, H);
+  // bar number above playhead
+  const cursorBarNum = state.recordingStartBar + Math.floor(cursorMs / barMs);
+  prCtx.fillStyle = isRecording ? '#ff6666' : (isPlaying ? '#ffffff' : '#aaaaff');
+  prCtx.font = 'bold 13px monospace';
+  prCtx.fillText(cursorBarNum, playheadX + 5, H - 6);
+}
+
+function startRaf() {
+  if (rafId) return;
+  (function loop() { renderPianoRoll(); rafId = requestAnimationFrame(loop); })();
+}
+
+function stopRaf() {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  renderPianoRoll();
+}
+
+window.addEventListener('resize', () => { if (!rafId) renderPianoRoll(); });
+
+// ═══════════════════════════════════════════════════════════════
+// SAVE / LOAD SESSION
+// ═══════════════════════════════════════════════════════════════
+async function saveSession() {
+  if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to save'); return; }
+
+  const payload = {
+    version:           1,
+    events:            state.events,
+    currentTakeId:     state.currentTakeId,
+    recordingStartBar: state.recordingStartBar,
+    cursorBar:         state.cursorBar,
+    cursorBeat:        state.cursorBeat,
+    bpm:               state.bpm,
+    beatsPerBar:       state.beatsPerBar,
+    startBar:          state.startBar,
+  };
+  const json = JSON.stringify(payload, null, 2);
+
+  try {
+    const fh = await window.showSaveFilePicker({
+      suggestedName: 'session.json',
+      types: [{ description: 'Piano Recorder Session', accept: { 'application/json': ['.json'] } }],
+    });
+    const writable = await fh.createWritable();
+    await writable.write(json);
+    await writable.close();
+    setStatus(`Saved — ${state.events.length} events, take ${state.currentTakeId}`);
+  } catch(e) {
+    if (e.name !== 'AbortError') setStatus('Save failed: ' + e.message);
+  }
+}
+
+async function loadSession() {
+  try {
+    const [fh] = await window.showOpenFilePicker({
+      types: [{ description: 'Piano Recorder Session', accept: { 'application/json': ['.json'] } }],
+    });
+    const file = await fh.getFile();
+    const text = await file.text();
+    const p    = JSON.parse(text);
+    if (!p.events || !Array.isArray(p.events)) throw new Error('Invalid session file');
+
+    stopAll();
+    state.events            = p.events;
+    state.currentTakeId     = p.currentTakeId     ?? 1;
+    state.recordingStartBar = p.recordingStartBar ?? 1;
+    state.cursorBar         = p.cursorBar         ?? 1;
+    state.cursorBeat        = p.cursorBeat        ?? 1;
+    state.hasTake           = state.events.length > 0;
+    state.preTakeBar        = state.cursorBar;
+    if (p.bpm)         $('bpmInput').value      = p.bpm;
+    if (p.beatsPerBar) $('timeSig').value        = p.beatsPerBar;
+    if (p.startBar)    $('startBarInput').value  = p.startBar;
+    noteSegments = computeNoteSegments(state.events);
+    updatePositionDisplay(state.cursorBar, state.cursorBeat);
+    updateTakeInfo();
+    renderPianoRoll();
+    setStatus(`Loaded — ${state.events.length} events, take ${state.currentTakeId}`);
+  } catch(e) {
+    if (e.name !== 'AbortError') setStatus('Load failed: ' + e.message);
+  }
+}
+
+$('btnSave').addEventListener('click', saveSession);
+$('btnLoad').addEventListener('click', loadSession);
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+updatePositionDisplay(state.cursorBar, state.cursorBeat);
+updateTakeInfo();
+updateShortcutLegend();
+initMidi();
+renderPianoRoll();
+</script>
+</body>
+</html>
