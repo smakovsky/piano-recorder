@@ -1360,13 +1360,12 @@ function renderPianoRoll() {
   prCtx.fillRect(0, 0, W, H);
 
   // Fixed visible window: always show WINDOW_BARS bars.
-  // Recording: playhead pinned at 75% so recorded content fills the left.
-  // Playing:   playhead pinned at 25% so upcoming content is visible ahead.
-  // Stopped:   playhead pinned at 25%.
-  const WINDOW_BARS  = 8;
-  const CURSOR_X     = isRecording ? Math.round(W * 0.75) : Math.round(W * 0.25);
-  const windowMs     = barMs * WINDOW_BARS;
-  const msPerPx      = windowMs / W;
+  // Playhead always pinned at 75% — past content fills the left,
+  // a quarter of empty space shows ahead. Never jumps between modes.
+  const WINDOW_BARS = 8;
+  const CURSOR_X    = Math.round(W * 0.75);
+  const windowMs    = barMs * WINDOW_BARS;
+  const msPerPx     = windowMs / W;
 
   // current playhead position in recording-timeline ms
   let cursorMs;
