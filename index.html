@@ -552,24 +552,23 @@ const state = {
   // recording
   recordingStartTime: null,   // performance.now() when capture began
   recordingStartBar:  1,      // global timeline origin (set on first take, reset on full undo)
-  events: [],                 // { deltaMs, msg, takeId } — sorted by deltaMs across all takes
-  recordedBpm:       120,     // BPM at the time of the first take; playback scales to current BPM
+  events: [],                 // { deltaBeats, msg, takeId } — tempo-independent, sorted ascending
   currentTakeId:     0,       // increments each record press
-  currentTakeOffset: 0,       // ms from global origin to current take's bar 1
+  currentTakeOffset: 0,       // beats from global origin to current take's bar 1
   preTakeBar:        1,       // cursor bar saved at start of last take (for auto-return)
   // playback
-  playbackStartTime: null,
-  playbackCursorMs:  0,
-  playbackBpmScale:  1,       // recordedBpm / currentBpm — scales deltaMs for tempo change
-  playbackTimer:     null,
+  playbackStartTime:        null,
+  playbackRealStartTime:    null,
+  playbackStartOffsetBeats: 0,
+  playbackTimer:            null,
   // metronome
   metroTimer:  null,
   metroBeat:   0,             // current beat index (0-based within bar)
   metroBar:    1,             // current bar number
   metroNextTime: 0,           // scheduled next tick (performance.now)
   // recording timeline anchors (set in startRecording)
-  recordingRealStartTime: 0,
-  recordingStartOffsetMs: 0,
+  recordingRealStartTime:    0,
+  recordingStartOffsetBeats: 0,
   // recording info
   hasTake: false,
   takeEventCount: 0,
@@ -624,21 +623,19 @@ const metroVolVal      = $('metroVolVal');
 function msPerBeat() { return 60000 / state.bpm; }
 function msPerBar()  { return msPerBeat() * state.beatsPerBar; }
 
-function totalRecordingMs() {
+function totalRecordingBeats() {
   if (!state.hasTake || state.events.length === 0) return 0;
-  return state.events[state.events.length - 1].deltaMs;
+  return state.events[state.events.length - 1].deltaBeats;
 }
 
 function totalRecordingBars() {
-  const ms = totalRecordingMs();
-  return Math.max(0, Math.ceil(ms / msPerBar()));
+  return Math.max(0, Math.ceil(totalRecordingBeats() / state.beatsPerBar));
 }
 
-function barBeatFromMs(ms) {
-  const barLen = msPerBar();
-  const beatLen = msPerBeat();
-  const bar  = Math.floor(ms / barLen) + state.recordingStartBar;
-  const beat = Math.floor((ms % barLen) / beatLen) + 1;
+// Convert beat offset from recording origin → { bar, beat } display values
+function barBeatFromBeats(beats) {
+  const bar  = Math.floor(beats / state.beatsPerBar) + state.recordingStartBar;
+  const beat = Math.floor(beats % state.beatsPerBar) + 1;
   return { bar, beat };
 }
 
@@ -728,23 +725,22 @@ function startRecording() {
 
   state.preTakeBar = state.cursorBar;
 
-  // On the very first take, fix the global origin and lock the BPM
+  // On the very first take, fix the global origin
   if (!state.hasTake) {
     state.recordingStartBar = state.cursorBar;
-    state.recordedBpm = state.bpm;
     state.events = [];
     state.currentTakeId = 0;
   }
 
   state.currentTakeId++;
-  state.currentTakeOffset = (state.cursorBar - state.recordingStartBar) * msPerBar();
+  // Offset in beats from recording origin to where this take starts
+  state.currentTakeOffset = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar;
 
   state.mode = 'recording';
   state.recordingStartTime = performance.now();
-  // Real-wall-clock anchor for the piano-roll playhead (same role as playbackRealStartTime)
   state.recordingRealStartTime = performance.now();
-  // The recording-timeline ms position where this take begins (for playhead math)
-  state.recordingStartOffsetMs = state.currentTakeOffset;
+  // Beat offset for this take's start (for playhead math, converted to ms on the fly)
+  state.recordingStartOffsetBeats = state.currentTakeOffset;
 
   updatePositionDisplay(state.cursorBar, 1);
   setStatus(`Recording take ${state.currentTakeId}…`, 'recording');
@@ -763,11 +759,11 @@ function handleMidiInput(msg) {
 
   if (state.mode !== 'recording') return;
   const now = performance.now();
-  const deltaMs = (now - state.recordingStartTime) + state.currentTakeOffset;
-  state.events.push({ deltaMs, msg: incoming, takeId: state.currentTakeId });
+  const elapsedBeats = (now - state.recordingStartTime) / msPerBeat();
+  const deltaBeats = elapsedBeats + state.currentTakeOffset;
+  state.events.push({ deltaBeats, msg: incoming, takeId: state.currentTakeId });
 
-  // update bar/beat display
-  const { bar, beat } = barBeatFromMs(deltaMs);
+  const { bar, beat } = barBeatFromBeats(deltaBeats);
   state.cursorBar  = bar;
   state.cursorBeat = beat;
   updatePositionDisplay(bar, beat);
@@ -778,11 +774,9 @@ function handleMidiInput(msg) {
 function schedulePlaybackDuringRecording() {
   if (!state.hasTake || state.events.length === 0) return;
 
-  const recordingId = state.recordingStartTime;
-  const startOffsetMs = state.recordingStartOffsetMs;
-
-  // Find events that start at or after the current take position
-  const eventsToPlay = state.events.filter(e => e.deltaMs >= startOffsetMs);
+  const recordingId      = state.recordingStartTime;
+  const startOffsetBeats = state.recordingStartOffsetBeats;
+  const eventsToPlay     = state.events.filter(e => e.deltaBeats >= startOffsetBeats);
   if (eventsToPlay.length === 0) return;
 
   function fireNext(idx) {
@@ -790,9 +784,9 @@ function schedulePlaybackDuringRecording() {
     if (idx >= eventsToPlay.length) return;
 
     const ev = eventsToPlay[idx];
-    const relativeMs = ev.deltaMs - startOffsetMs;
-    const targetWall = state.recordingRealStartTime + relativeMs;
-    const delay = Math.max(0, targetWall - performance.now());
+    const relativeMs  = (ev.deltaBeats - startOffsetBeats) * msPerBeat();
+    const targetWall  = state.recordingRealStartTime + relativeMs;
+    const delay       = Math.max(0, targetWall - performance.now());
 
     setTimeout(() => {
       if (state.mode !== 'recording' || state.recordingStartTime !== recordingId) return;
@@ -809,8 +803,7 @@ function stopRecording() {
   stopMetronome();
   allNotesOff();
 
-  // merge takes: sort all events by time
-  state.events.sort((a, b) => a.deltaMs - b.deltaMs);
+  state.events.sort((a, b) => a.deltaBeats - b.deltaBeats);
 
   state.mode = 'stopped';
   state.hasTake = true;
@@ -835,30 +828,27 @@ function startPlayback() {
   if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to play'); return; }
   stopAll();
 
-  // Scale recorded deltaMs to current BPM so tempo changes affect playback
-  const bpmScale = state.recordedBpm / state.bpm;
-
-  const cursorOffsetMs = ((state.cursorBar - state.recordingStartBar) * msPerBar()
-                       + (state.cursorBeat - 1) * msPerBeat()) * bpmScale;
-  const startIdx = state.events.findIndex(e => e.deltaMs * bpmScale >= cursorOffsetMs);
+  // Cursor position in beats from recording origin
+  const cursorOffsetBeats = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar
+                          + (state.cursorBeat - 1);
+  const startIdx = state.events.findIndex(e => e.deltaBeats >= cursorOffsetBeats);
   if (startIdx === -1) { setStatus('Cursor past end of recording'); return; }
 
   state.mode = 'playing';
-  state.playbackStartTime = performance.now();
-  state.playbackRealStartTime = performance.now();
-  state.playbackStartRecordingMs = cursorOffsetMs;
-  state.playbackBpmScale = bpmScale;
+  state.playbackStartTime        = performance.now();
+  state.playbackRealStartTime    = performance.now();
+  state.playbackStartOffsetBeats = cursorOffsetBeats;
+
   btnPlay.classList.add('playing');
   btnPlay.textContent = '⏸ Pause';
   setStatus('Playing...', 'playing');
 
-  schedulePlayback(startIdx, cursorOffsetMs);
+  schedulePlayback(startIdx, cursorOffsetBeats);
   startRaf();
 }
 
-function schedulePlayback(startIdx, offsetMs) {
+function schedulePlayback(startIdx, offsetBeats) {
   const playbackId = state.playbackStartTime;
-  const bpmScale   = state.playbackBpmScale;
 
   function fire(idx) {
     if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
@@ -869,15 +859,16 @@ function schedulePlayback(startIdx, offsetMs) {
     }
 
     const ev = state.events[idx];
-    const scaledMs = ev.deltaMs * bpmScale;
-    const delay = Math.max(0, state.playbackStartTime + (scaledMs - offsetMs) - performance.now());
+    // Convert beats → ms using current BPM at fire time
+    const relativeMs = (ev.deltaBeats - offsetBeats) * msPerBeat();
+    const delay = Math.max(0, state.playbackStartTime + relativeMs - performance.now());
 
     state.playbackTimer = setTimeout(() => {
       if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
 
       midiSend(ev.msg);
 
-      const { bar, beat } = barBeatFromMs(scaledMs / bpmScale);
+      const { bar, beat } = barBeatFromBeats(ev.deltaBeats);
       state.cursorBar  = bar;
       state.cursorBeat = beat;
       updatePositionDisplay(bar, beat);
@@ -977,8 +968,7 @@ function navGoStart() {
 function navGoEnd() {
   stopAll();
   if (!state.hasTake) return;
-  const endMs = totalRecordingMs();
-  const { bar } = barBeatFromMs(endMs);
+  const { bar } = barBeatFromBeats(totalRecordingBeats());
   state.cursorBar  = bar;
   state.cursorBeat = 1;
   updatePositionDisplay(state.cursorBar, state.cursorBeat);
@@ -1030,10 +1020,10 @@ function exportMidi() {
   const numerator = beatsPerBar;
   trk.add(0, JZZ.MIDI.smfTimeSignature(numerator, denomPow, 24, 8));
 
-  // Add events
+  // Add events — deltaBeats * PPQ gives ticks directly
   let prevTick = 0;
   for (const ev of cleaned) {
-    const tick = Math.round(ev.deltaMs / msPerTick);
+    const tick = Math.round(ev.deltaBeats * PPQ);
     const delta = Math.max(0, tick - prevTick);
     const msg = ev.msg;
 
@@ -1334,21 +1324,21 @@ let rafId = null;
 function computeNoteSegments(events) {
   const segs = [];
   const open = {};
-  const endMs = events.length ? events[events.length - 1].deltaMs : 0;
+  const endBeats = events.length ? events[events.length - 1].deltaBeats : 0;
   for (const ev of events) {
-    const m  = ev.msg;
-    const st = m[0] & 0xF0;
+    const m   = ev.msg;
+    const st  = m[0] & 0xF0;
     const key = `${m[0] & 0x0F}_${m[1]}`;
     if (st === 0x90 && m[2] > 0) {
-      open[key] = { startMs: ev.deltaMs, pitch: m[1], vel: m[2] };
+      open[key] = { startBeats: ev.deltaBeats, pitch: m[1], vel: m[2] };
     } else if (st === 0x80 || (st === 0x90 && m[2] === 0)) {
       if (open[key]) {
-        segs.push({ ...open[key], endMs: ev.deltaMs });
+        segs.push({ ...open[key], endBeats: ev.deltaBeats });
         delete open[key];
       }
     }
   }
-  for (const key in open) segs.push({ ...open[key], endMs });
+  for (const key in open) segs.push({ ...open[key], endBeats });
   return segs;
 }
 
@@ -1361,41 +1351,33 @@ function renderPianoRoll() {
 
   const isRecording = state.mode === 'recording';
   const isPlaying   = state.mode === 'playing';
-  const barMs  = msPerBar();
-  const beatMs = msPerBeat();
+  const beatMs = msPerBeat(); // current BPM — display always reflects current tempo
 
   // background
   prCtx.fillStyle = '#0d0d14';
   prCtx.fillRect(0, 0, W, H);
 
-  // Fixed visible window: always show WINDOW_BARS bars.
-  // Playhead always pinned at 75% — past content fills the left,
-  // a quarter of empty space shows ahead. Never jumps between modes.
+  // Window: 8 bars wide, playhead pinned at 75%
   const WINDOW_BARS = 8;
   const CURSOR_X    = Math.round(W * 0.75);
-  const windowMs    = barMs * WINDOW_BARS;
-  const msPerPx     = windowMs / W;
+  const windowBeats = WINDOW_BARS * state.beatsPerBar;
+  const beatsPerPx  = windowBeats / W;
 
-  // current playhead position in recording-timeline ms (unscaled)
-  let cursorMs;
+  // Playhead in beats from recording origin
+  let cursorBeats;
   if (isRecording) {
-    cursorMs = state.recordingStartOffsetMs + (performance.now() - state.recordingRealStartTime);
+    cursorBeats = state.recordingStartOffsetBeats
+                + (performance.now() - state.recordingRealStartTime) / beatMs;
   } else if (isPlaying) {
-    // wall-clock elapsed scaled back to recording-timeline ms
-    const scaledElapsed = (performance.now() - state.playbackRealStartTime) / state.playbackBpmScale;
-    const startInRecordingMs = state.playbackStartRecordingMs / state.playbackBpmScale;
-    cursorMs = startInRecordingMs + scaledElapsed;
+    cursorBeats = state.playbackStartOffsetBeats
+                + (performance.now() - state.playbackRealStartTime) / beatMs;
   } else {
-    cursorMs = (state.cursorBar - state.recordingStartBar) * barMs
-             + (state.cursorBeat - 1) * beatMs;
+    cursorBeats = (state.cursorBar - state.recordingStartBar) * state.beatsPerBar
+                + (state.cursorBeat - 1);
   }
 
-  // timeline ms that maps to pixel 0 (left edge of canvas)
-  const viewStartMs = (isRecording || isPlaying)
-    ? cursorMs - CURSOR_X * msPerPx          // scroll: cursor pinned at CURSOR_X
-    : cursorMs - CURSOR_X * msPerPx;         // stopped: same pin so cursor is always visible
-
-  function msToX(ms) { return (ms - viewStartMs) / msPerPx; }
+  const viewStartBeats = cursorBeats - CURSOR_X * beatsPerPx;
+  function beatsToX(b) { return (b - viewStartBeats) / beatsPerPx; }
 
   // pitch helpers
   const PITCH_MIN = 21, PITCH_MAX = 108;
@@ -1404,10 +1386,10 @@ function renderPianoRoll() {
   function pitchY(pitch) { return H - ((pitch - PITCH_MIN) / pitchRange) * H - noteH; }
 
   // beat + bar grid
-  const firstBeat = Math.floor(viewStartMs / beatMs);
-  const lastBeat  = Math.ceil((viewStartMs + windowMs) / beatMs);
+  const firstBeat = Math.floor(viewStartBeats);
+  const lastBeat  = Math.ceil(viewStartBeats + windowBeats);
   for (let b = firstBeat; b <= lastBeat; b++) {
-    const x = Math.round(msToX(b * beatMs));
+    const x = Math.round(beatsToX(b));
     if (x < -2 || x > W + 2) continue;
     const isBarLine = b % state.beatsPerBar === 0;
     if (isBarLine) {
@@ -1423,23 +1405,23 @@ function renderPianoRoll() {
     }
   }
 
-  // note segments (all takes)
+  // note segments (all takes) — stored in beats, drawn at current BPM scale
   for (const seg of noteSegments) {
-    const x1 = msToX(seg.startMs);
-    const x2 = Math.max(x1 + 3, msToX(seg.endMs));
+    const x1 = beatsToX(seg.startBeats);
+    const x2 = Math.max(x1 + 3, beatsToX(seg.endBeats));
     if (x2 < 0 || x1 > W) continue;
     const alpha = 0.55 + (seg.vel / 127) * 0.45;
     prCtx.fillStyle = `rgba(80,190,90,${alpha.toFixed(2)})`;
     prCtx.fillRect(x1, pitchY(seg.pitch), x2 - x1, noteH + 1);
   }
 
-  // live note-on marks for the current recording take
+  // live note-on marks for current recording take
   if (isRecording) {
     for (const ev of state.events) {
       if (ev.takeId !== state.currentTakeId) continue;
       const m = ev.msg;
       if ((m[0] & 0xF0) === 0x90 && m[2] > 0) {
-        const x = msToX(ev.deltaMs);
+        const x = beatsToX(ev.deltaBeats);
         if (x < 0 || x > W) continue;
         prCtx.fillStyle = 'rgba(255,100,80,0.9)';
         prCtx.fillRect(x, pitchY(m[1]), 3, noteH + 1);
@@ -1447,16 +1429,13 @@ function renderPianoRoll() {
     }
   }
 
-  // playhead — always at CURSOR_X when playing/recording, or computed when stopped
-  const playheadX = (isRecording || isPlaying) ? CURSOR_X : Math.round(msToX(cursorMs));
-  // glow
+  // playhead
+  const playheadX = (isRecording || isPlaying) ? CURSOR_X : Math.round(beatsToX(cursorBeats));
   prCtx.fillStyle = isRecording ? 'rgba(255,60,60,0.18)' : (isPlaying ? 'rgba(255,255,255,0.12)' : 'rgba(120,120,220,0.12)');
   prCtx.fillRect(playheadX - 6, 0, 14, H);
-  // line
   prCtx.fillStyle = isRecording ? '#ff3333' : (isPlaying ? '#ffffff' : '#9090ee');
   prCtx.fillRect(playheadX, 0, 3, H);
-  // bar number above playhead
-  const cursorBarNum = state.recordingStartBar + Math.floor(cursorMs / barMs);
+  const cursorBarNum = state.recordingStartBar + Math.floor(cursorBeats / state.beatsPerBar);
   prCtx.fillStyle = isRecording ? '#ff6666' : (isPlaying ? '#ffffff' : '#aaaaff');
   prCtx.font = 'bold 13px monospace';
   prCtx.fillText(cursorBarNum, playheadX + 5, H - 6);
@@ -1481,11 +1460,10 @@ async function saveSession() {
   if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to save'); return; }
 
   const payload = {
-    version:           1,
+    version:           2,
     events:            state.events,
     currentTakeId:     state.currentTakeId,
     recordingStartBar: state.recordingStartBar,
-    recordedBpm:       state.recordedBpm,
     cursorBar:         state.cursorBar,
     cursorBeat:        state.cursorBeat,
     bpm:               state.bpm,
@@ -1522,7 +1500,6 @@ async function loadSession() {
     state.events            = p.events;
     state.currentTakeId     = p.currentTakeId     ?? 1;
     state.recordingStartBar = p.recordingStartBar ?? 1;
-    state.recordedBpm       = p.recordedBpm       ?? p.bpm ?? 120;
     state.cursorBar         = p.cursorBar         ?? 1;
     state.cursorBeat        = p.cursorBeat        ?? 1;
     state.hasTake           = state.events.length > 0;
