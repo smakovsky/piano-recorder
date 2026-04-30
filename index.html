@@ -1175,10 +1175,11 @@ document.addEventListener('keydown', e => {
   // Don't fire when capturing keys in modal
   if (document.querySelector('.key-capture.capturing')) return;
 
-  // R — record
+  // R — record toggle
   if (e.code === 'KeyR' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
-    startRecording();
+    if (state.mode === 'recording') stopRecording();
+    else startRecording();
     return;
   }
 
@@ -1208,7 +1209,10 @@ document.addEventListener('keydown', e => {
 // ═══════════════════════════════════════════════════════════════
 // BUTTON CLICK HANDLERS
 // ═══════════════════════════════════════════════════════════════
-btnRecord.addEventListener('click', startRecording);
+btnRecord.addEventListener('click', () => {
+  if (state.mode === 'recording') stopRecording();
+  else startRecording();
+});
 btnPlay.addEventListener('click', () => {
   if (state.mode === 'playing') { stopAll(); setStatus('Stopped'); }
   else startPlayback();
