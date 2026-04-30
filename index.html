@@ -716,11 +716,11 @@ function metronomeLoop() {
 
 function startMetronome(fromBar) {
   stopMetronome();
-  state.metroBar  = fromBar;
-  // Beat 1 of bar 1 is already displayed by startRecording.
-  // Start metroBeat at 1 so the first tick fires beat 2 one beat later.
-  state.metroBeat     = 1;
+  state.metroBar      = fromBar;
+  state.metroBeat     = 1;  // loop starts at beat 2; beat 1 is fired below
   state.metroNextTime = performance.now() + msPerBeat();
+  // Fire beat 1 click immediately, then let the loop handle beat 2 onward
+  scheduleMetroBeat(0);
   state.metroTimer    = setTimeout(metronomeLoop, msPerBeat());
 }
 
