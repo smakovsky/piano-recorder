@@ -1511,7 +1511,7 @@ function renderPianoRoll() {
 
   // Window: 8 bars wide, playhead pinned at 75%
   const WINDOW_BARS = 8;
-  const CURSOR_X    = Math.round(W * 0.75);
+  const CURSOR_X    = Math.round(W * 0.5);
   const bpb = state.hasTake ? state.recordingBeatsPerBar : state.beatsPerBar;
   const windowBeats = WINDOW_BARS * bpb;
   const beatsPerPx  = windowBeats / W;
