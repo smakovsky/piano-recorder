@@ -159,6 +159,9 @@
   .btn-load  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
   .btn-load:hover { background: #2a2a38; }
 
+  .btn-save-as { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-save-as:hover { background: #2a2a38; }
+
   .btn-panic { background: #6a1a1a; color: #ff8a80; border: 1px solid #b71c1c; }
   .btn-panic:hover { background: #b71c1c; color: #fff; }
 
@@ -435,10 +438,6 @@
     <input type="number" id="bpmInput" value="120" min="20" max="300">
   </div>
   <div class="field">
-    <label>Start Bar</label>
-    <input type="number" id="startBarInput" value="1" min="1">
-  </div>
-  <div class="field">
     <label>MIDI Input</label>
     <select id="midiInputSelect"><option value="">-- No devices --</option></select>
   </div>
@@ -490,10 +489,11 @@
 
 <!-- BOTTOM BAR -->
 <div class="bottom-bar">
-  <button class="btn-export" id="btnExport">Export MIDI</button>
-  <button class="btn-save"   id="btnSave">Save Session</button>
-  <button class="btn-load"   id="btnLoad">Load Session</button>
-  <button class="btn-panic"  id="btnPanic">Panic</button>
+  <button class="btn-export"  id="btnExport">Export MIDI</button>
+  <button class="btn-save"    id="btnSave">Save</button>
+  <button class="btn-save-as" id="btnSaveAs">Save As…</button>
+  <button class="btn-load"    id="btnLoad">Load Session</button>
+  <button class="btn-panic"   id="btnPanic">Panic</button>
   <div class="take-info" id="takeInfo">No recording</div>
 </div>
 
@@ -502,6 +502,7 @@
   <div class="shortcut-item"><kbd id="kbdRecord">R</kbd> Record</div>
   <div class="shortcut-item"><kbd>Space</kbd> Play / Stop</div>
   <div class="shortcut-item"><kbd>⌘Z</kbd> Undo</div>
+  <div class="shortcut-item"><kbd>⌘S</kbd> Save</div>
   <div class="shortcut-item"><kbd id="kbdPrevBar">Fn+Shift+←</kbd> Prev Bar</div>
   <div class="shortcut-item"><kbd id="kbdNextBar">Fn+Shift+→</kbd> Next Bar</div>
   <div class="shortcut-item"><kbd id="kbdGoStart">Fn+Shift+↑</kbd> Go to Start</div>
@@ -548,7 +549,6 @@ const state = {
   // session settings (read fresh each action)
   get bpm()       { return Math.min(300, Math.max(20, parseInt(document.getElementById('bpmInput').value) || 120)); },
   get beatsPerBar(){ return parseInt(document.getElementById('timeSig').value) || 4; },
-  get startBar()  { return Math.max(1, parseInt(document.getElementById('startBarInput').value) || 1); },
   // recording
   recordingStartTime: null,   // performance.now() when capture began
   recordingStartBar:  1,      // global timeline origin (set on first take, reset on full undo)
@@ -922,7 +922,7 @@ function undo() {
 
   if (!state.hasTake) {
     // All takes gone: reset origin so next recording starts fresh
-    state.recordingStartBar    = state.startBar;
+    state.recordingStartBar    = 1;
     state.recordingBeatsPerBar = state.beatsPerBar;
     state.currentTakeId        = 0;
   }
@@ -934,7 +934,7 @@ function undo() {
   updatePositionDisplay(state.cursorBar, 1);
   setStatus(state.hasTake
     ? `Take ${state.currentTakeId + 1} undone — ${state.events.length} events remain`
-    : `All takes cleared — ready from Bar ${state.startBar}`);
+    : `All takes cleared — ready from Bar ${1}`);
   updateTakeInfo();
   renderPianoRoll();
 }
@@ -963,7 +963,7 @@ function navNextBar() {
 
 function navGoStart() {
   stopAll();
-  state.cursorBar  = state.hasTake ? state.recordingStartBar : state.startBar;
+  state.cursorBar  = state.hasTake ? state.recordingStartBar : 1;
   state.cursorBeat = 1;
   updatePositionDisplay(state.cursorBar, state.cursorBeat);
   setStatus(`Bar ${state.cursorBar}`);
@@ -999,7 +999,7 @@ function cleanCC64(events) {
 // ═══════════════════════════════════════════════════════════════
 // MIDI EXPORT
 // ═══════════════════════════════════════════════════════════════
-function exportMidi() {
+async function exportMidi() {
   if (!state.hasTake || state.events.length === 0) {
     setStatus('Nothing to export');
     return;
@@ -1010,7 +1010,6 @@ function exportMidi() {
   const bpm = state.bpm;
   const beatsPerBar = state.recordingBeatsPerBar;
   const usPerBeat = Math.round(60000000 / bpm);
-  const msPerTick = 60000 / bpm / PPQ;
 
   // Build SMF Type 0
   const smf = new JZZ.MIDI.SMF(0, PPQ);
@@ -1020,16 +1019,14 @@ function exportMidi() {
   // Tempo
   trk.add(0, JZZ.MIDI.smfTempo(usPerBeat));
 
-  // Time signature (numerator, denominator as power of 2)
-  const denomPow = beatsPerBar === 6 ? 3 : 2;  // 6/8 → denom=8=2^3, others → 4=2^2
-  const numerator = beatsPerBar;
-  trk.add(0, JZZ.MIDI.smfTimeSignature(numerator, denomPow, 24, 8));
+  // Time signature — denominator is actual note value (4 = quarter, 8 = eighth)
+  const numerator = beatsPerBar === 6 ? 6 : beatsPerBar;
+  const denominator = beatsPerBar === 6 ? 8 : 4;
+  trk.add(0, JZZ.MIDI.smfTimeSignature(numerator, denominator, 24, 8));
 
-  // Add events — deltaBeats * PPQ gives ticks directly
-  let prevTick = 0;
+  // Add events — trk.add() takes absolute ticks
   for (const ev of cleaned) {
     const tick = Math.round(ev.deltaBeats * PPQ);
-    const delta = Math.max(0, tick - prevTick);
     const msg = ev.msg;
 
     let midiMsg;
@@ -1054,25 +1051,29 @@ function exportMidi() {
       continue; // skip sysex etc.
     }
 
-    trk.add(delta, midiMsg);
-    prevTick = tick;
+    trk.add(tick, midiMsg);
   }
 
   // End of track
   trk.add(0, JZZ.MIDI.smfEndOfTrack());
 
-  // Trigger download
   const data = smf.dump();
   const bytes = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
   const blob = new Blob([bytes], { type: 'audio/midi' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `recording.mid`;
-  a.click();
-  URL.revokeObjectURL(url);
-  setStatus('Exported recording.mid');
+
+  try {
+    const fh = await window.showSaveFilePicker({
+      suggestedName: 'recording.mid',
+      types: [{ description: 'MIDI File', accept: { 'audio/midi': ['.mid'] } }],
+    });
+    const writable = await fh.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    setStatus('Exported MIDI');
+  } catch(e) {
+    if (e.name !== 'AbortError') setStatus('Export failed: ' + e.message);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1226,6 +1227,13 @@ document.addEventListener('keydown', e => {
     return;
   }
 
+  // Cmd+S — save
+  if (e.code === 'KeyS' && e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    saveSession();
+    return;
+  }
+
   // Navigation shortcuts
   if (matchesShortcut(e, shortcuts.prevBar))  { e.preventDefault(); navPrevBar(); return; }
   if (matchesShortcut(e, shortcuts.nextBar))  { e.preventDefault(); navNextBar(); return; }
@@ -1259,6 +1267,24 @@ $('btnPanic').addEventListener('click', () => {
 metroVolumeSlider.addEventListener('input', () => {
   metroVolVal.textContent = metroVolumeSlider.value;
 });
+
+// BPM — apply live on input; Enter blurs (commits visually); blur clamps value
+const bpmInput = $('bpmInput');
+bpmInput.addEventListener('input', () => {
+  const v = parseInt(bpmInput.value);
+  if (v >= 20 && v <= 300) setStatus(`BPM: ${v}`);
+});
+bpmInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); bpmInput.blur(); }
+});
+bpmInput.addEventListener('blur', () => {
+  const v = Math.min(300, Math.max(20, parseInt(bpmInput.value) || 120));
+  bpmInput.value = v;
+  setStatus(`BPM: ${v}`);
+});
+
+// Time signature — select already applies on change; just blur after selection
+$('timeSig').addEventListener('change', () => { $('timeSig').blur(); });
 
 // ═══════════════════════════════════════════════════════════════
 // SHORTCUT CONFIG MODAL
@@ -1504,31 +1530,53 @@ window.addEventListener('resize', () => { if (!rafId) renderPianoRoll(); });
 // ═══════════════════════════════════════════════════════════════
 // SAVE / LOAD SESSION
 // ═══════════════════════════════════════════════════════════════
-async function saveSession() {
-  if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to save'); return; }
+let currentSessionFileHandle = null;
 
-  const payload = {
-    version:           2,
-    events:            state.events,
-    currentTakeId:     state.currentTakeId,
+function buildSessionPayload() {
+  return {
+    version:              2,
+    events:               state.events,
+    currentTakeId:        state.currentTakeId,
     recordingStartBar:    state.recordingStartBar,
     recordingBeatsPerBar: state.recordingBeatsPerBar,
     cursorBar:            state.cursorBar,
-    cursorBeat:        state.cursorBeat,
-    bpm:               state.bpm,
-    beatsPerBar:       state.beatsPerBar,
-    startBar:          state.startBar,
+    cursorBeat:           state.cursorBeat,
+    bpm:                  state.bpm,
+    beatsPerBar:          state.beatsPerBar,
   };
-  const json = JSON.stringify(payload, null, 2);
+}
 
+async function writeToHandle(fh) {
+  const json = JSON.stringify(buildSessionPayload(), null, 2);
+  const writable = await fh.createWritable();
+  await writable.write(json);
+  await writable.close();
+}
+
+async function saveSession() {
+  if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to save'); return; }
+  if (currentSessionFileHandle) {
+    // Already have a file — write directly without opening picker
+    try {
+      await writeToHandle(currentSessionFileHandle);
+      setStatus(`Saved — ${state.events.length} events, take ${state.currentTakeId}`);
+    } catch(e) {
+      if (e.name !== 'AbortError') setStatus('Save failed: ' + e.message);
+    }
+  } else {
+    await saveSessionAs();
+  }
+}
+
+async function saveSessionAs() {
+  if (!state.hasTake || state.events.length === 0) { setStatus('Nothing to save'); return; }
   try {
     const fh = await window.showSaveFilePicker({
       suggestedName: 'session.json',
       types: [{ description: 'Piano Recorder Session', accept: { 'application/json': ['.json'] } }],
     });
-    const writable = await fh.createWritable();
-    await writable.write(json);
-    await writable.close();
+    await writeToHandle(fh);
+    currentSessionFileHandle = fh;
     setStatus(`Saved — ${state.events.length} events, take ${state.currentTakeId}`);
   } catch(e) {
     if (e.name !== 'AbortError') setStatus('Save failed: ' + e.message);
@@ -1546,17 +1594,17 @@ async function loadSession() {
     if (!p.events || !Array.isArray(p.events)) throw new Error('Invalid session file');
 
     stopAll();
-    state.events            = p.events;
+    state.events                 = p.events;
     state.currentTakeId          = p.currentTakeId          ?? 1;
     state.recordingStartBar      = p.recordingStartBar      ?? 1;
     state.recordingBeatsPerBar   = p.recordingBeatsPerBar   ?? p.beatsPerBar ?? 4;
     state.cursorBar              = p.cursorBar              ?? 1;
-    state.cursorBeat        = p.cursorBeat        ?? 1;
-    state.hasTake           = state.events.length > 0;
-    state.preTakeBar        = state.cursorBar;
-    if (p.bpm)         $('bpmInput').value      = p.bpm;
-    if (p.beatsPerBar) $('timeSig').value        = p.beatsPerBar;
-    if (p.startBar)    $('startBarInput').value  = p.startBar;
+    state.cursorBeat             = p.cursorBeat             ?? 1;
+    state.hasTake                = state.events.length > 0;
+    state.preTakeBar             = state.cursorBar;
+    if (p.bpm)         $('bpmInput').value = p.bpm;
+    if (p.beatsPerBar) $('timeSig').value  = p.beatsPerBar;
+    currentSessionFileHandle = fh; // subsequent Cmd+S saves back to same file
     noteSegments = computeNoteSegments(state.events);
     updatePositionDisplay(state.cursorBar, state.cursorBeat);
     updateTakeInfo();
@@ -1568,6 +1616,7 @@ async function loadSession() {
 }
 
 $('btnSave').addEventListener('click', saveSession);
+$('btnSaveAs').addEventListener('click', saveSessionAs);
 $('btnLoad').addEventListener('click', loadSession);
 
 // ═══════════════════════════════════════════════════════════════
