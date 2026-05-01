@@ -474,6 +474,7 @@
 
   <div class="buttons">
     <button class="btn-undo" id="btnUndo">&#8592; Undo</button>
+    <button class="btn-undo" id="btnRedo">Redo &#8594;</button>
     <button class="btn-record" id="btnRecord">&#9679; Record</button>
     <button class="btn-play"  id="btnPlay">&#9654; Play</button>
     <button class="btn-stop"  id="btnStop">&#9632; Stop</button>
@@ -502,6 +503,7 @@
   <div class="shortcut-item"><kbd id="kbdRecord">R</kbd> Record</div>
   <div class="shortcut-item"><kbd>Space</kbd> Play / Stop</div>
   <div class="shortcut-item"><kbd>⌘Z</kbd> Undo</div>
+  <div class="shortcut-item"><kbd>⌘⇧Z</kbd> Redo</div>
   <div class="shortcut-item"><kbd>⌘S</kbd> Save</div>
   <div class="shortcut-item"><kbd id="kbdPrevBar">Fn+Shift+←</kbd> Prev Bar</div>
   <div class="shortcut-item"><kbd id="kbdNextBar">Fn+Shift+→</kbd> Next Bar</div>
@@ -556,7 +558,7 @@ const state = {
   events: [],                 // { deltaBeats, msg, takeId } — tempo-independent, sorted ascending
   currentTakeId:     0,       // increments each record press
   currentTakeOffset: 0,       // beats from global origin to current take's bar 1
-  preTakeBar:        1,       // cursor bar saved at start of last take (for auto-return)
+  preTakeBarStack:   [],      // stack of cursor bars, one per take (push on record, pop on undo)
   // playback
   playbackStartTime:        null,
   playbackRealStartTime:    null,
@@ -578,6 +580,9 @@ const state = {
   midiInput:  null,
   midiOutput: null,
 };
+
+// Redo stack: each entry is { events, currentTakeId, recordingStartBar, recordingBeatsPerBar, cursorBar }
+let redoStack = [];
 
 // Shortcut config: stored as { key, code, shift, ctrl, alt, meta }
 let shortcuts = loadShortcuts();
@@ -735,7 +740,8 @@ function startRecording() {
   if (state.mode === 'recording') return;
   stopAll();
 
-  state.preTakeBar = state.cursorBar;
+  state.preTakeBarStack.push(state.cursorBar);
+  redoStack = []; // new recording invalidates redo history
 
   // On the very first take, fix the global origin
   if (!state.hasTake) {
@@ -819,7 +825,7 @@ function stopRecording() {
   state.hasTake = true;
 
   // return cursor to where this take started (easy re-take workflow)
-  state.cursorBar  = state.preTakeBar;
+  state.cursorBar  = state.preTakeBarStack[state.preTakeBarStack.length - 1] ?? 1;
   state.cursorBeat = 1;
   updatePositionDisplay(state.cursorBar, state.cursorBeat);
 
@@ -911,30 +917,65 @@ function stopAll() {
 // ═══════════════════════════════════════════════════════════════
 function undo() {
   stopAll();
+  if (state.currentTakeId <= 0) return;
 
-  if (state.currentTakeId > 0) {
-    // Remove only the most recent take
-    state.events = state.events.filter(e => e.takeId !== state.currentTakeId);
-    state.currentTakeId--;
-  }
+  // Save current state onto redo stack before removing
+  redoStack.push({
+    events:               state.events.slice(),
+    currentTakeId:        state.currentTakeId,
+    recordingStartBar:    state.recordingStartBar,
+    recordingBeatsPerBar: state.recordingBeatsPerBar,
+    cursorBar:            state.cursorBar,
+  });
+
+  // Remove the most recent take
+  state.events = state.events.filter(e => e.takeId !== state.currentTakeId);
+  state.currentTakeId--;
+
+  // Pop the cursor position that was saved when this take started
+  const restoredBar = state.preTakeBarStack.pop() ?? 1;
 
   state.hasTake = state.events.length > 0;
 
   if (!state.hasTake) {
-    // All takes gone: reset origin so next recording starts fresh
     state.recordingStartBar    = 1;
     state.recordingBeatsPerBar = state.beatsPerBar;
     state.currentTakeId        = 0;
   }
 
-  // Return cursor to where this take started
-  state.cursorBar  = state.preTakeBar;
+  state.cursorBar  = restoredBar;
   state.cursorBeat = 1;
   noteSegments = state.hasTake ? computeNoteSegments(state.events) : [];
   updatePositionDisplay(state.cursorBar, 1);
   setStatus(state.hasTake
     ? `Take ${state.currentTakeId + 1} undone — ${state.events.length} events remain`
-    : `All takes cleared — ready from Bar ${1}`);
+    : 'All takes cleared');
+  updateTakeInfo();
+  renderPianoRoll();
+}
+
+function redo() {
+  stopAll();
+  if (redoStack.length === 0) return;
+
+  const snap = redoStack.pop();
+  state.events               = snap.events;
+  state.currentTakeId        = snap.currentTakeId;
+  state.recordingStartBar    = snap.recordingStartBar;
+  state.recordingBeatsPerBar = snap.recordingBeatsPerBar;
+  state.hasTake              = state.events.length > 0;
+
+  // Rebuild preTakeBarStack to match restored takeId depth
+  // We don't have full history, so push snap.cursorBar as the top entry
+  if (state.preTakeBarStack.length < state.currentTakeId) {
+    state.preTakeBarStack.push(snap.cursorBar);
+  }
+
+  state.cursorBar  = snap.cursorBar;
+  state.cursorBeat = 1;
+  noteSegments = state.hasTake ? computeNoteSegments(state.events) : [];
+  updatePositionDisplay(state.cursorBar, 1);
+  setStatus(`Redo — take ${state.currentTakeId} restored, ${state.events.length} events`);
   updateTakeInfo();
   renderPianoRoll();
 }
@@ -1220,10 +1261,15 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // Cmd+Z — undo
+  // Cmd+Z — undo, Cmd+Shift+Z — redo
   if (e.code === 'KeyZ' && e.metaKey && !e.shiftKey) {
     e.preventDefault();
     undo();
+    return;
+  }
+  if (e.code === 'KeyZ' && e.metaKey && e.shiftKey) {
+    e.preventDefault();
+    redo();
     return;
   }
 
@@ -1257,6 +1303,7 @@ btnStop.addEventListener('click', () => {
   else { stopAll(); setStatus('Stopped'); }
 });
 btnUndo.addEventListener('click', undo);
+$('btnRedo').addEventListener('click', redo);
 btnExport.addEventListener('click', exportMidi);
 
 $('btnPanic').addEventListener('click', () => {
@@ -1601,7 +1648,9 @@ async function loadSession() {
     state.cursorBar              = p.cursorBar              ?? 1;
     state.cursorBeat             = p.cursorBeat             ?? 1;
     state.hasTake                = state.events.length > 0;
-    state.preTakeBar             = state.cursorBar;
+    // Reconstruct stack with one entry per take, all pointing to loaded cursor position
+    state.preTakeBarStack = Array(state.currentTakeId).fill(state.cursorBar);
+    redoStack = [];
     if (p.bpm)         $('bpmInput').value = p.bpm;
     if (p.beatsPerBar) $('timeSig').value  = p.beatsPerBar;
     currentSessionFileHandle = fh; // subsequent Cmd+S saves back to same file
