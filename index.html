@@ -435,7 +435,10 @@
   </div>
   <div class="field">
     <label>BPM</label>
-    <input type="number" id="bpmInput" value="120" min="20" max="300">
+    <div style="display:flex;gap:6px;align-items:center;">
+      <input type="number" id="bpmInput" value="120" min="20" max="300">
+      <button class="btn-stop btn-sm" id="btnTap" style="font-size:11px;height:34px;padding:0 12px;flex-shrink:0;">Tap</button>
+    </div>
   </div>
   <div class="field">
     <label>MIDI Input</label>
@@ -451,6 +454,27 @@
       <input type="range" id="metroVolume" min="0" max="127" value="90">
       <span class="vol-value" id="metroVolVal">90</span>
     </div>
+  </div>
+  <div class="field">
+    <label>&nbsp;</label>
+    <label style="display:flex;align-items:center;gap:6px;height:34px;font-weight:normal;font-size:12px;text-transform:none;letter-spacing:normal;white-space:nowrap;color:var(--text);">
+      <input type="checkbox" id="metroComputerAudio">
+      Click through computer audio
+    </label>
+  </div>
+  <div class="field">
+    <label>&nbsp;</label>
+    <label style="display:flex;align-items:center;gap:6px;height:34px;font-weight:normal;font-size:12px;text-transform:none;letter-spacing:normal;white-space:nowrap;color:var(--text);" title="Turn off if your MIDI output is a VST (e.g. Pianoteq) that isn't a GM drum kit — it'll otherwise play the click as a pitched note (e.g. F#) instead of a hi-hat.">
+      <input type="checkbox" id="metroMidiClick" checked>
+      Send click via MIDI
+    </label>
+  </div>
+  <div class="field">
+    <label>&nbsp;</label>
+    <label style="display:flex;align-items:center;gap:6px;height:34px;font-weight:normal;font-size:12px;text-transform:none;letter-spacing:normal;white-space:nowrap;color:var(--text);">
+      <input type="checkbox" id="playbackComputerAudio">
+      Play notes through computer audio
+    </label>
   </div>
   <div class="field" style="margin-left:auto;">
     <label>&nbsp;</label>
@@ -502,6 +526,7 @@
 <!-- SHORTCUTS LEGEND -->
 <div class="shortcuts">
   <div class="shortcut-item"><kbd id="kbdRecord">R</kbd> Record</div>
+  <div class="shortcut-item"><kbd>T</kbd> Tap Tempo</div>
   <div class="shortcut-item"><kbd>Space</kbd> Play / Stop</div>
   <div class="shortcut-item"><kbd>⌘Z</kbd> Undo</div>
   <div class="shortcut-item"><kbd>⌘⇧Z</kbd> Redo</div>
@@ -626,6 +651,9 @@ const midiInputSelect  = $('midiInputSelect');
 const midiOutputSelect = $('midiOutputSelect');
 const metroVolumeSlider= $('metroVolume');
 const metroVolVal      = $('metroVolVal');
+const metroComputerAudio = $('metroComputerAudio');
+const metroMidiClick = $('metroMidiClick');
+const playbackComputerAudio = $('playbackComputerAudio');
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -683,12 +711,62 @@ function midiSend(msgArray) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// COMPUTER AUDIO (Web Audio) — shared engine
+// ═══════════════════════════════════════════════════════════════
+// Lazily-created AudioContext used by both the metronome click and the
+// synth-piano playback options below. This is independent of MIDI entirely —
+// it plays through the Mac's normal audio output (e.g. headset), so it works
+// even when the MIDI-out device (keyboard/VST) doesn't route its own sound
+// to what you're listening on.
+let sharedAudioCtx = null;
+function getSharedAudioCtx() {
+  if (!sharedAudioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    sharedAudioCtx = new Ctx();
+  }
+  if (sharedAudioCtx.state === 'suspended') sharedAudioCtx.resume();
+  return sharedAudioCtx;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // METRONOME
 // ═══════════════════════════════════════════════════════════════
+function playMetroClickComputerAudio(beatIndex, vol) {
+  const ctx = getSharedAudioCtx();
+  if (!ctx) return;
+  const accented = beatIndex === 0;
+  const freq = accented ? 1000 : 800;
+  const durationSec = accented ? 0.03 : 0.02;
+  const peakGain = (accented ? vol : vol * 0.7) / 127; // match MIDI accent ratio
+
+  const osc  = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+
+  const now = ctx.currentTime;
+  // Fast attack, short decay — avoids clicks/pops from a hard on/off edge.
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(peakGain, now + 0.002);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+  osc.start(now);
+  osc.stop(now + durationSec + 0.01);
+}
+
 function scheduleMetroBeat(beatIndex) {
-  if (!state.midiOutput) return;
   const vol = parseInt(metroVolumeSlider.value);
   if (vol <= 0) return;
+
+  if (metroComputerAudio.checked) {
+    playMetroClickComputerAudio(beatIndex, vol);
+  }
+
+  if (!metroMidiClick.checked) return;
+  if (!state.midiOutput) return;
   const vel = beatIndex === 0 ? vol : Math.round(vol * 0.7);
   const note = 42; // closed hi-hat
   midiSend([0x99, note, vel]);
@@ -735,6 +813,80 @@ function startMetronome(fromBar) {
 
 function stopMetronome() {
   if (state.metroTimer) { clearTimeout(state.metroTimer); state.metroTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SYNTH PIANO (Web Audio) — for "play notes through computer audio"
+// ═══════════════════════════════════════════════════════════════
+// Simple polyphonic synth: a couple of detuned oscillators per note
+// (roughly approximating a piano's harmonic richness) through an ADSR-ish
+// gain envelope. Not a substitute for Pianoteq — just enough to make
+// recorded playback audible on the headset independent of MIDI routing.
+const synthVoices = new Map(); // note number -> { oscs, gain }
+
+function noteToFreq(note) {
+  return 440 * Math.pow(2, (note - 69) / 12);
+}
+
+function synthNoteOn(note, velocity) {
+  const ctx = getSharedAudioCtx();
+  if (!ctx) return;
+  synthNoteOff(note); // retrigger cleanly if already sounding
+
+  const freq = noteToFreq(note);
+  const peakGain = Math.min(1, velocity / 127) * 0.5;
+
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+
+  const oscs = [1, 2.01, 0.5].map((ratio, i) => {
+    const osc = ctx.createOscillator();
+    osc.type = i === 0 ? 'triangle' : 'sine';
+    osc.frequency.value = freq * ratio;
+    const oscGain = ctx.createGain();
+    oscGain.gain.value = i === 0 ? 1 : 0.15; // partials quieter than fundamental
+    osc.connect(oscGain);
+    oscGain.connect(gain);
+    osc.start();
+    return osc;
+  });
+
+  const now = ctx.currentTime;
+  // Quick attack, decay toward a lower sustain — piano-ish envelope
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(peakGain, now + 0.005);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peakGain * 0.3), now + 0.3);
+
+  synthVoices.set(note, { oscs, gain });
+}
+
+function synthNoteOff(note) {
+  const voice = synthVoices.get(note);
+  if (!voice) return;
+  synthVoices.delete(note);
+
+  const ctx = getSharedAudioCtx();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  // Release — fade out then stop oscillators
+  voice.gain.gain.cancelScheduledValues(now);
+  voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+  voice.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+  voice.oscs.forEach(osc => osc.stop(now + 0.16));
+}
+
+function synthAllNotesOff() {
+  Array.from(synthVoices.keys()).forEach(synthNoteOff);
+}
+
+// Feed a raw MIDI message ([status, data1, data2]) into the synth piano.
+function synthHandleMidiMsg(msg) {
+  const status = msg[0] & 0xF0;
+  if (status === 0x90 && msg[2] > 0) {
+    synthNoteOn(msg[1], msg[2]);
+  } else if (status === 0x80 || (status === 0x90 && msg[2] === 0)) {
+    synthNoteOff(msg[1]);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -896,6 +1048,7 @@ function schedulePlayback(startIdx, offsetBeats) {
       if (state.mode !== 'playing' || state.playbackStartTime !== playbackId) return;
 
       midiSend(ev.msg);
+      if (playbackComputerAudio.checked) synthHandleMidiMsg(ev.msg);
       fire(idx + 1);
     }, delay);
   }
@@ -908,6 +1061,7 @@ function allNotesOff() {
     midiSend([0xB0 | ch, 123, 0]); // all notes off
     midiSend([0xB0 | ch, 120, 0]); // all sound off
   }
+  synthAllNotesOff();
 }
 
 function stopAll() {
@@ -1087,7 +1241,18 @@ async function exportMidi() {
   const PPQ = 480;
   const bpm = state.bpm;
   const beatsPerBar = state.recordingBeatsPerBar;
-  const usPerBeat = Math.round(60000000 / bpm);
+
+  // Time signature — recorded pulses are always quarter-note length
+  // (msPerBeat), but 6/8 notates each pulse as an eighth note, so the
+  // exported denominator is 8 and ticks-per-pulse is halved to match.
+  const denominator = beatsPerBar === 6 ? 8 : 4;
+  const ticksPerPulse = PPQ * 4 / denominator;
+
+  // Tempo meta-event is always "microseconds per PPQ quarter note" by SMF
+  // spec, independent of the time signature. Since ticksPerPulse no longer
+  // equals PPQ for compound meters, scale usPerBeat so a pulse still takes
+  // the same real time (60000/bpm ms) it did during recording.
+  const usPerBeat = Math.round((60000000 / bpm) * (PPQ / ticksPerPulse));
 
   // Build SMF Type 0
   const smf = new JZZ.MIDI.SMF(0, PPQ);
@@ -1097,15 +1262,12 @@ async function exportMidi() {
   // Tempo
   trk.add(0, JZZ.MIDI.smfTempo(usPerBeat));
 
-  // Time signature — denominator is actual note value (4 = quarter, 8 = eighth)
-  const numerator = beatsPerBar === 6 ? 6 : beatsPerBar;
-  const denominator = beatsPerBar === 6 ? 8 : 4;
-  trk.add(0, JZZ.MIDI.smfTimeSignature(numerator, denominator, 24, 8));
+  trk.add(0, JZZ.MIDI.smfTimeSignature(beatsPerBar, denominator, 24, 8));
 
   // Add events — trk.add() takes absolute ticks
   let lastTick = 0;
   for (const ev of cleaned) {
-    const tick = Math.round(ev.deltaBeats * PPQ);
+    const tick = Math.round(ev.deltaBeats * ticksPerPulse);
     const msg = ev.msg;
 
     let midiMsg;
@@ -1283,6 +1445,13 @@ document.addEventListener('keydown', e => {
   // Don't fire when capturing keys in modal
   if (document.querySelector('.key-capture.capturing')) return;
 
+  // T — tap tempo
+  if (e.code === 'KeyT' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    tap();
+    return;
+  }
+
   // R — record toggle
   if (e.code === 'KeyR' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
@@ -1377,8 +1546,44 @@ bpmInput.addEventListener('blur', () => {
   setStatus(`BPM: ${v}`);
 });
 
-// Time signature — select already applies on change; just blur after selection
-$('timeSig').addEventListener('change', () => { $('timeSig').blur(); });
+// Time signature — locked during active recording (bar grid must stay stable
+// mid-take), but editable otherwise so loaded/finished takes can be re-timed.
+$('timeSig').addEventListener('change', () => {
+  $('timeSig').blur();
+  if (state.mode === 'recording') {
+    $('timeSig').value = state.recordingBeatsPerBar;
+    setStatus('Time signature is locked while recording');
+    return;
+  }
+  if (state.hasTake) {
+    state.recordingBeatsPerBar = state.beatsPerBar;
+  }
+  renderPianoRoll();
+});
+
+// Tap tempo
+const TAP_RESET_MS = 2000; // reset tap history after 2s of silence
+const TAP_MAX = 8;         // average over last N taps
+let tapTimes = [];
+
+function tap() {
+  const now = performance.now();
+  if (tapTimes.length > 0 && now - tapTimes[tapTimes.length - 1] > TAP_RESET_MS) {
+    tapTimes = [];
+  }
+  tapTimes.push(now);
+  if (tapTimes.length > TAP_MAX + 1) tapTimes.shift();
+  if (tapTimes.length < 2) { setStatus('Tap again…'); return; }
+
+  const intervals = [];
+  for (let i = 1; i < tapTimes.length; i++) intervals.push(tapTimes[i] - tapTimes[i - 1]);
+  const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  const bpm = Math.min(300, Math.max(20, Math.round(60000 / avg)));
+  $('bpmInput').value = bpm;
+  setStatus(`Tap tempo: ${bpm} BPM`);
+}
+
+$('btnTap').addEventListener('click', tap);
 
 // ═══════════════════════════════════════════════════════════════
 // SHORTCUT CONFIG MODAL
