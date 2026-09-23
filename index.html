@@ -448,6 +448,13 @@
     <label>MIDI Output</label>
     <select id="midiOutputSelect"><option value="">-- No devices --</option></select>
   </div>
+  <div class="field">
+    <label>&nbsp;</label>
+    <label style="display:flex;align-items:center;gap:6px;height:34px;font-weight:normal;font-size:12px;text-transform:none;letter-spacing:normal;white-space:nowrap;color:var(--text);" title="Turn off if your MIDI keyboard already sounds on its own (e.g. it's connected directly to your VST). Leave on if your keyboard needs this app to echo notes back out to make sound (e.g. 'local control off' keyboards).">
+      <input type="checkbox" id="echoLiveInput" checked>
+      Echo live input to MIDI output
+    </label>
+  </div>
   <div class="metro-field">
     <label>Metronome Volume</label>
     <div class="volume-row">
@@ -602,6 +609,7 @@ const state = {
   // recording info
   hasTake: false,
   takeEventCount: 0,
+  dirty: false,   // true when there are unsaved changes since last save/load
   // MIDI
   jzzReady: false,
   midiInput:  null,
@@ -654,6 +662,7 @@ const metroVolVal      = $('metroVolVal');
 const metroComputerAudio = $('metroComputerAudio');
 const metroMidiClick = $('metroMidiClick');
 const playbackComputerAudio = $('playbackComputerAudio');
+const echoLiveInput = $('echoLiveInput');
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -938,8 +947,11 @@ function startRecording() {
 function handleMidiInput(msg) {
   const incoming = Array.from(msg);
 
-  // Route to output so keyboard sounds (local control is OFF)
-  midiSend(incoming);
+  // Route to output so keyboard sounds (for "local control off" keyboards
+  // that need this echo to make any sound at all). If the keyboard already
+  // sounds on its own — e.g. it has a direct hardware/USB connection into a
+  // VST — leave this off to avoid double-triggering every note.
+  if (echoLiveInput.checked) midiSend(incoming);
 
   if (state.mode !== 'recording') return;
   const now = performance.now();
@@ -988,6 +1000,7 @@ function stopRecording() {
 
   state.mode = 'stopped';
   state.hasTake = true;
+  state.dirty = true;
 
   // return cursor to where this take started (easy re-take workflow)
   state.cursorBar  = state.preTakeBarStack[state.preTakeBarStack.length - 1] ?? 1;
@@ -1083,6 +1096,7 @@ function stopAll() {
 // UNDO
 // ═══════════════════════════════════════════════════════════════
 function applySnapshot(snap) {
+  state.dirty                = true;
   state.events               = snap.events.slice();
   state.currentTakeId        = snap.currentTakeId;
   state.recordingStartBar    = snap.recordingStartBar;
@@ -1155,6 +1169,7 @@ function truncateAfterCursor() {
   undoStack.push(currentSnapshot());
   redoStack = [];
 
+  state.dirty   = true;
   state.events  = kept;
   state.hasTake = kept.length > 0;
   if (!state.hasTake) {
@@ -1858,6 +1873,7 @@ async function saveSession() {
     // Already have a file — write directly without opening picker
     try {
       await writeToHandle(currentSessionFileHandle);
+      state.dirty = false;
       setStatus(`Saved — ${state.events.length} events, take ${state.currentTakeId}`);
     } catch(e) {
       if (e.name !== 'AbortError') setStatus('Save failed: ' + e.message);
@@ -1876,6 +1892,7 @@ async function saveSessionAs() {
     });
     await writeToHandle(fh);
     currentSessionFileHandle = fh;
+    state.dirty = false;
     setStatus(`Saved — ${state.events.length} events, take ${state.currentTakeId}`);
   } catch(e) {
     if (e.name !== 'AbortError') setStatus('Save failed: ' + e.message);
@@ -1907,6 +1924,7 @@ async function loadSession() {
     if (p.bpm)         $('bpmInput').value = p.bpm;
     if (p.beatsPerBar) $('timeSig').value  = p.beatsPerBar;
     currentSessionFileHandle = fh; // subsequent Cmd+S saves back to same file
+    state.dirty = false;
     noteSegments = computeNoteSegments(state.events);
     updatePositionDisplay(state.cursorBar, state.cursorBeat);
     updateTakeInfo();
@@ -1920,6 +1938,16 @@ async function loadSession() {
 $('btnSave').addEventListener('click', saveSession);
 $('btnSaveAs').addEventListener('click', saveSessionAs);
 $('btnLoad').addEventListener('click', loadSession);
+
+// Warn before navigating away (back/forward, close tab, reload, etc.) if
+// there's a recorded take that hasn't been saved since its last change —
+// e.g. an accidental Cmd+Left/Right (browser back/forward) instead of the
+// app's Shift+Left/Right bar-navigation shortcut shouldn't silently lose work.
+window.addEventListener('beforeunload', e => {
+  if (!state.dirty) return;
+  e.preventDefault();
+  e.returnValue = ''; // required for the confirmation dialog in Chrome
+});
 
 // ═══════════════════════════════════════════════════════════════
 // INIT
